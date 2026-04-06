@@ -3,20 +3,7 @@
 编写一键启动android上的frida-server的python启动脚本。
 
 
-
-## 初始化python虚拟环境
-检测启动脚本的目录下，是否存在`.venv-frida`这个python虚拟环境，如果不存在则需要先创建。创建失败则打印日志并终止执行。
-
-
-
-## Step1: 安装frida依赖
-判断requirements.txt中的依赖是否存在：
-- 如果不存在：在虚拟环境中调用`pip3 install -r requirements.txt`安装依赖。安装失败则打印日志并终止执行。
-- 如果存在：如果脚本指定了`--upgrade`参数，则调用`pip3 install -r requirements.txt`更新依赖，否则跳过这一步。
-
-
-
-## Step2: 下载、安装frida server
+## Step1: 下载、安装frida server
 1. 检查android设备是否连接，如果没有连接，则打印日志并终止执行。
 2. 读取`~/mobile-arsenal/frida/install_record.json`中是否有安装记录： 
    1. 如果没有：则跳转到第3步。
@@ -33,7 +20,7 @@
 
 
 
-## Step3: 安装frida server到android设备
+## Step2: 安装frida server到android设备
 1. 检查是否有连接的android设备，如果没有则打印错误日志然后终止执行。
 2. 如果有多台android设备链接，脚本参数没有指定`-s [设备ID]`，则打印错误日志然后终止执行。
    1. `-s`参数说明：` -s SERIAL                use device with given serial (overrides $ANDROID_SERIAL)`。通常通过adb命令检测是否有android设备连接，如果有多台设备，当前需要操作某一台安卓设备的时候，adb需要`-s`参数，用于知道要操作哪台设备。
@@ -49,7 +36,7 @@
 
 
 
-## Step4: 在android上运行frida-server
+## Step3: 在android上运行frida-server
 
 1. 获取要连接的android设备ID，获取失败则打印日志并终止执行。
 2. 读取`~/mobile-arsenal/frida/install_record.json`，根据**android设备ID**这个key，获取**frida server安装路径产生的路径**。
