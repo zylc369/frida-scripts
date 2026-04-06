@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from library import config
@@ -16,7 +17,230 @@ from library import port as port_mod
 from library.log import log
 from library.random_name import generate_random_name
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+
+@dataclass
+class FridaStartupConfig:
+    serial: str
+    upgrade: bool
+
+
+class FridaStartupClient:
+    def __init__(self, config: FridaStartupConfig) -> None:
+        self._config: FridaStartupConfig = config
+        self._host_port: int | None = None
+        self._process: subprocess.Popen | None = None
+        self._cleanup_registered: bool = False
+
+    def start(self) -> None:
+        log.info("===== 开始启动 frida-server =====")
+        source_path = self._prepare_server()
+        if source_path is not None:
+            self._install_to_device(source_path)
+        self._run_server()
+        self._register_cleanup()
+        log.info("===== frida-server 启动完成 =====")
+        log.info("连接信息: 127.0.0.1:%d", self._host_port)
+        log.info("按 Ctrl+C 停止 frida-server")
+        self._wait()
+
+    # --- step1: download ---
+    def _prepare_server(self) -> Path | None:
+        skip, record = self._check_install_record()
+        if skip:
+            return None
+
+        local = self._find_local_download()
+        if local is not None:
+            return local
+        archive = self._download_frida_server()
+        return self._extract_archive(archive)
+
+    def _check_install_record(self) -> tuple[bool, dict | None]:
+        record = install_record.get_device_record(self._config.serial)
+        if record is None:
+            return False, None
+
+        if self._config.upgrade:
+            log.info("--upgrade 指定，跳过安装记录检查，将重新下载")
+            return False, None
+
+        install_path = record.get("installPath")
+        if not install_path:
+            log.warning("安装记录缺少 installPath，删除失效记录")
+            install_record.delete_device_record(self._config.serial)
+            return False, None
+
+        if adb.check_path_exists(self._config.serial, install_path):
+            log.info("frida-server 已安装于设备: %s", install_path)
+            return True, record
+        else:
+            log.warning("安装记录中的路径在设备上不存在，删除失效记录: %s", install_path)
+            install_record.delete_device_record(self._config.serial)
+            return False, None
+
+    def _find_local_download(self) -> Path | None:
+        if not config.FRIDA_DOWNLOAD_DIR.exists():
+            return None
+
+        candidates = []
+        for path in config.FRIDA_DOWNLOAD_DIR.glob(config.FRIDA_SERVER_BINARY_GLOB):
+            if path.is_file() and not path.name.endswith((".xz", ".gz", ".bz2")):
+                candidates.append(path)
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda p: p.stat().st_ctime, reverse=True)
+        chosen = candidates[0]
+        log.info("找到本地已下载的 frida-server: %s", chosen)
+        return chosen
+
+    def _download_frida_server(self) -> Path:
+        config.FRIDA_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+        log.info("正在下载 frida-server...")
+        result = subprocess.run(
+            [
+                "bunx", "@zylc369/bw-gh-release-fetch",
+                "https://github.com/frida/frida",
+                "frida-server-*-android-arm64.*",
+                "-o", str(config.FRIDA_DOWNLOAD_DIR),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            log.error("下载 frida-server 失败:\nstdout: %s\nstderr: %s", result.stdout, result.stderr)
+            sys.exit(1)
+
+        output = result.stdout.strip()
+        downloaded_files = []
+        for line in output.splitlines():
+            line = line.strip()
+            if config.FRIDA_DOWNLOAD_DIR.name in line or "frida-server" in line:
+                for potential_path in line.split():
+                    p = Path(potential_path.strip())
+                    if p.exists() and "frida-server" in p.name:
+                        downloaded_files.append(p)
+
+        if not downloaded_files:
+            for path in config.FRIDA_DOWNLOAD_DIR.glob("frida-server-*-android-arm64.*"):
+                if path.is_file() and path.name.endswith((".xz", ".gz", ".bz2", ".tar")):
+                    downloaded_files.append(path)
+
+        if len(downloaded_files) == 0:
+            log.error("下载完成但未找到下载的文件")
+            sys.exit(1)
+
+        if len(downloaded_files) > 1:
+            log.error(
+                "下载了多个文件，预期只下载一个。下载的文件: %s",
+                ", ".join(str(f) for f in downloaded_files),
+            )
+            sys.exit(1)
+
+        archive_path = downloaded_files[0]
+        log.info("下载完成: %s", archive_path)
+        return archive_path
+
+    def _extract_archive(self, archive_path: Path) -> Path:
+        log.info("正在解压: %s", archive_path)
+        try:
+            with tarfile.open(archive_path, "r") as tar:
+                tar.extractall(path=str(config.FRIDA_DOWNLOAD_DIR))
+        except Exception as e:
+            log.error("解压失败: %s", e)
+            sys.exit(1)
+
+        extracted = self._find_local_download()
+        if extracted is None:
+            log.error("解压完成但未找到 frida-server 二进制文件")
+            sys.exit(1)
+        log.info("解压成功: %s", extracted)
+        return extracted
+
+    # --- step2: install ---
+    def _install_to_device(self, source_path: Path) -> str:
+        devices = adb.get_devices()
+        if self._config.serial not in devices:
+            log.error("设备 %s 未连接", self._config.serial)
+            sys.exit(1)
+        dir_name = generate_random_name()
+        file_name = generate_random_name()
+        install_dir = f"{config.ADB_INSTALL_ROOT}/{dir_name}"
+        install_path = f"{install_dir}/{file_name}"
+        log.info("安装路径: %s", install_path)
+        adb.mkdir_p(self._config.serial, install_dir)
+        adb.push_file(self._config.serial, str(source_path), install_path)
+        adb.adb_shell(self._config.serial, f"chmod 755 {install_path}")
+        install_record.update_device_record(
+            self._config.serial,
+            sourcePath=str(source_path),
+            installPath=install_path,
+        )
+        log.info("frida-server 安装成功: %s", install_path)
+        return install_path
+
+    # --- step3: run ---
+    def _run_server(self) -> None:
+        record = install_record.get_device_record(self._config.serial)
+        if record is None:
+            log.error("未找到设备 %s 的安装记录", self._config.serial)
+            sys.exit(1)
+        install_path = record.get("installPath")
+        if not install_path:
+            log.error("安装记录缺少 installPath")
+            sys.exit(1)
+        if not adb.check_path_exists(self._config.serial, install_path):
+            log.error("frida-server 在设备上不存在: %s", install_path)
+            sys.exit(1)
+        android_port = port_mod.find_free_android_port(self._config.serial)
+        log.info("使用 Android 端口: %d", android_port)
+        frida_process = adb.run_frida_server_bg(self._config.serial, install_path, android_port)
+        host_port = port_mod.find_free_host_port()
+        log.info("使用主机端口: %d", host_port)
+        adb.forward_port(self._config.serial, host_port, android_port)
+        install_record.update_device_record(
+            self._config.serial,
+            hostTcpPort=host_port,
+            androidTcpPort=android_port,
+        )
+        log.info("frida-server 已启动")
+        log.info("主机端口 %d -> Android 端口 %d (设备: %s)", host_port, android_port, self._config.serial)
+        self._host_port = host_port
+        self._process = frida_process
+
+    # --- cleanup ---
+    def _register_cleanup(self) -> None:
+        if not self._cleanup_registered:
+            atexit.register(self._cleanup)
+
+            def signal_handler(signum, frame):
+                log.info("收到终止信号，正在清理...")
+                self._cleanup()
+                sys.exit(0)
+
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+            self._cleanup_registered = True
+
+    def _cleanup(self) -> None:
+        if self._config.serial and self._host_port:
+            adb.remove_forward(self._config.serial, self._host_port)
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+
+    def _wait(self) -> None:
+        assert self._process is not None
+        try:
+            self._process.wait()
+        except KeyboardInterrupt:
+            pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,207 +261,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def step1_download_frida_server(serial: str, upgrade: bool) -> Path | None:
-    skip, record = _check_install_record(serial, upgrade)
-    if skip:
-        return None
-
-    local = _find_local_download()
-    if local is not None:
-        return local
-    archive = _download_frida_server()
-    return _extract_archive(archive)
-def _check_install_record(serial: str, upgrade: bool) -> tuple[bool, dict | None]:
-    record = install_record.get_device_record(serial)
-    if record is None:
-        return False, None
-
-    if upgrade:
-        log.info("--upgrade 指定，跳过安装记录检查，将重新下载")
-        return False, None
-
-    install_path = record.get("installPath")
-    if not install_path:
-        log.warning("安装记录缺少 installPath，删除失效记录")
-        install_record.delete_device_record(serial)
-        return False, None
-
-    if adb.check_path_exists(serial, install_path):
-        log.info("frida-server 已安装于设备: %s", install_path)
-        return True, record
-    else:
-        log.warning("安装记录中的路径在设备上不存在，删除失效记录: %s", install_path)
-        install_record.delete_device_record(serial)
-        return False, None
-
-
-def _find_local_download() -> Path | None:
-    if not config.FRIDA_DOWNLOAD_DIR.exists():
-        return None
-
-    candidates = []
-    for path in config.FRIDA_DOWNLOAD_DIR.glob(config.FRIDA_SERVER_BINARY_GLOB):
-        if path.is_file() and not path.name.endswith((".xz", ".gz", ".bz2")):
-            candidates.append(path)
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda p: p.stat().st_ctime, reverse=True)
-    chosen = candidates[0]
-    log.info("找到本地已下载的 frida-server: %s", chosen)
-    return chosen
-def _download_frida_server() -> Path:
-    config.FRIDA_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-    log.info("正在下载 frida-server...")
-    result = subprocess.run(
-        [
-            "bunx", "@zylc369/bw-gh-release-fetch",
-            "https://github.com/frida/frida",
-            "frida-server-*-android-arm64.*",
-            "-o", str(config.FRIDA_DOWNLOAD_DIR),
-        ],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        log.error("下载 frida-server 失败:\nstdout: %s\nstderr: %s", result.stdout, result.stderr)
-        sys.exit(1)
-
-    output = result.stdout.strip()
-    downloaded_files = []
-    for line in output.splitlines():
-        line = line.strip()
-        if config.FRIDA_DOWNLOAD_DIR.name in line or "frida-server" in line:
-            for potential_path in line.split():
-                p = Path(potential_path.strip())
-                if p.exists() and "frida-server" in p.name:
-                    downloaded_files.append(p)
-
-    if not downloaded_files:
-        for path in config.FRIDA_DOWNLOAD_DIR.glob("frida-server-*-android-arm64.*"):
-            if path.is_file() and path.name.endswith((".xz", ".gz", ".bz2", ".tar")):
-                downloaded_files.append(path)
-
-    if len(downloaded_files) == 0:
-        log.error("下载完成但未找到下载的文件")
-        sys.exit(1)
-
-    if len(downloaded_files) > 1:
-        log.error(
-            "下载了多个文件，预期只下载一个。下载的文件: %s",
-            ", ".join(str(f) for f in downloaded_files),
-        )
-        sys.exit(1)
-
-    archive_path = downloaded_files[0]
-    log.info("下载完成: %s", archive_path)
-    return archive_path
-def _extract_archive(archive_path: Path) -> Path:
-    log.info("正在解压: %s", archive_path)
-    try:
-        with tarfile.open(archive_path, "r") as tar:
-            tar.extractall(path=str(config.FRIDA_DOWNLOAD_DIR))
-    except Exception as e:
-        log.error("解压失败: %s", e)
-        sys.exit(1)
-
-    extracted = _find_local_download()
-    if extracted is None:
-        log.error("解压完成但未找到 frida-server 二进制文件")
-        sys.exit(1)
-    log.info("解压成功: %s", extracted)
-    return extracted
-def step2_install_to_device(serial: str, source_path: Path) -> str:
-    devices = adb.get_devices()
-    if serial not in devices:
-        log.error("设备 %s 未连接", serial)
-        sys.exit(1)
-    dir_name = generate_random_name()
-    file_name = generate_random_name()
-    install_dir = f"{config.ADB_INSTALL_ROOT}/{dir_name}"
-    install_path = f"{install_dir}/{file_name}"
-    log.info("安装路径: %s", install_path)
-    adb.mkdir_p(serial, install_dir)
-    adb.push_file(serial, str(source_path), install_path)
-    adb.adb_shell(serial, f"chmod 755 {install_path}")
-    install_record.update_device_record(
-        serial,
-        sourcePath=str(source_path),
-        installPath=install_path,
-    )
-    log.info("frida-server 安装成功: %s", install_path)
-    return install_path
-def step3_run_frida_server(serial: str) -> tuple[int, int, subprocess.Popen]:
-    record = install_record.get_device_record(serial)
-    if record is None:
-        log.error("未找到设备 %s 的安装记录", serial)
-        sys.exit(1)
-    install_path = record.get("installPath")
-    if not install_path:
-        log.error("安装记录缺少 installPath")
-        sys.exit(1)
-    if not adb.check_path_exists(serial, install_path):
-        log.error("frida-server 在设备上不存在: %s", install_path)
-        sys.exit(1)
-    android_port = port_mod.find_free_android_port(serial)
-    log.info("使用 Android 端口: %d", android_port)
-    frida_process = adb.run_frida_server_bg(serial, install_path, android_port)
-    host_port = port_mod.find_free_host_port()
-    log.info("使用主机端口: %d", host_port)
-    adb.forward_port(serial, host_port, android_port)
-    install_record.update_device_record(
-        serial,
-        hostTcpPort=host_port,
-        androidTcpPort=android_port,
-    )
-    log.info("frida-server 已启动")
-    log.info("主机端口 %d -> Android 端口 %d (设备: %s)", host_port, android_port, serial)
-    return host_port, android_port, frida_process
-_cleanup_registered = False
-_cleanup_serial = None
-_cleanup_host_port = None
-_cleanup_process = None
-def _do_cleanup() -> None:
-    if _cleanup_serial and _cleanup_host_port:
-        adb.remove_forward(_cleanup_serial, _cleanup_host_port)
-    if _cleanup_process and _cleanup_process.poll() is None:
-        _cleanup_process.terminate()
-        try:
-            _cleanup_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _cleanup_process.kill()
-def register_cleanup(serial: str, host_port: int, frida_process: subprocess.Popen) -> None:
-    global _cleanup_registered, _cleanup_serial, _cleanup_host_port, _cleanup_process
-    _cleanup_serial = serial
-    _cleanup_host_port = host_port
-    _cleanup_process = frida_process
-    if not _cleanup_registered:
-        atexit.register(_do_cleanup)
-        def signal_handler(signum, frame):
-            log.info("收到终止信号，正在清理...")
-            _do_cleanup()
-            sys.exit(0)
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-        _cleanup_registered = True
 def main() -> None:
     args = parse_args()
-    log.info("===== 开始启动 frida-server =====")
-    serial = adb.resolve_device(args.serial)
-    source_path = step1_download_frida_server(serial, args.upgrade)
-    if source_path is not None:
-        step2_install_to_device(serial, source_path)
-    host_port, android_port, process = step3_run_frida_server(serial)
-    register_cleanup(serial, host_port, process)
-    log.info("===== frida-server 启动完成 =====")
-    log.info("连接信息: 127.0.0.1:%d", host_port)
-    log.info("按 Ctrl+C 停止 frida-server")
-    try:
-        process.wait()
-    except KeyboardInterrupt:
-        pass
+    client_config = FridaStartupConfig(
+        serial=adb.resolve_device(args.serial),
+        upgrade=args.upgrade,
+    )
+    FridaStartupClient(client_config).start()
+
+
 if __name__ == "__main__":
     main()
