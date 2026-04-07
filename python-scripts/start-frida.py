@@ -230,6 +230,11 @@ class FridaStartupClient:
             self._cleanup_registered = True
 
     def _cleanup(self) -> None:
+        if self._cleanup_registered:
+            self._cleanup_registered = False
+        else:
+            return
+
         if self._config.serial and self._host_port:
             adb.remove_forward(self._config.serial, self._host_port)
         if self._process and self._process.poll() is None:
