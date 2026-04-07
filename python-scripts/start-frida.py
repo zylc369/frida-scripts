@@ -3,10 +3,10 @@
 
 import argparse
 import atexit
+import lzma
 import signal
 import subprocess
 import sys
-import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -148,9 +148,11 @@ class FridaStartupClient:
 
     def _extract_archive(self, archive_path: Path) -> Path:
         log.info("正在解压: %s", archive_path)
+        output_path = config.FRIDA_DOWNLOAD_DIR / archive_path.stem
         try:
-            with tarfile.open(archive_path, "r") as tar:
-                tar.extractall(path=str(config.FRIDA_DOWNLOAD_DIR))
+            with lzma.open(archive_path, "rb") as f_in, open(output_path, "wb") as f_out:
+                while chunk := f_in.read(1024 * 1024):
+                    f_out.write(chunk)
         except Exception as e:
             log.error("解压失败: %s", e)
             sys.exit(1)
