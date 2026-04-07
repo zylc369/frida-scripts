@@ -235,6 +235,7 @@ class FridaStartupClient:
         else:
             return
 
+        log.info(f"要清理端口。serial: {self._config.serial}，host_port={self._host_port}")
         if self._config.serial and self._host_port:
             adb.remove_forward(self._config.serial, self._host_port)
             install_record.update_device_record(

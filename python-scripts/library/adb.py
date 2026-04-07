@@ -115,16 +115,28 @@ def push_file(serial: str, local_path: str, remote_path: str) -> None:
     log.info("文件推送成功")
 
 
+def check_su_available(serial: str) -> bool:
+    """Run: adb -s <serial> shell which su
+
+    Returns True if `su` binary is found on the device.
+    """
+    result = adb_shell(serial, "which su")
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def run_frida_server_bg(serial: str, frida_path: str, port: int) -> subprocess.Popen:
     """Start frida-server in background via adb shell.
 
     Returns Popen object for lifecycle management.
-    Command: adb -s <serial> shell <frida_path> -l 0.0.0.0:<port>
+    If `su` is available on the device, prefixes the command with `su`
+    so frida-server runs as root.
+    Command: adb -s <serial> shell [su] <frida_path> -l 0.0.0.0:<port>
     """
-    args = _adb_base_args(serial) + [
-        "shell",
-        f"{frida_path} -l 0.0.0.0:{port}",
-    ]
+    use_su = check_su_available(serial)
+    cmd = f"su -c '{frida_path} -l 0.0.0.0:{port}'" if use_su else f"{frida_path} -l 0.0.0.0:{port}"
+    args = _adb_base_args(serial) + ["shell", cmd]
+    if use_su:
+        log.info("设备支持 su，将以 root 权限启动 frida-server")
     log.info("正在启动 frida-server: %s -l 0.0.0.0:%d", frida_path, port)
     return subprocess.Popen(
         args,
