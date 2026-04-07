@@ -80,6 +80,7 @@ class FridaStartupClient:
 
     def _find_local_download(self) -> Path | None:
         if not config.FRIDA_DOWNLOAD_DIR.exists():
+            log.info(f"下载目录不存在，意味着 frida-server 还未下载: {config.FRIDA_DOWNLOAD_DIR}")
             return None
 
         candidates = []
@@ -88,6 +89,7 @@ class FridaStartupClient:
                 candidates.append(path)
 
         if not candidates:
+            log.info(f"没有找到本地下载的 frida-server: {config.FRIDA_DOWNLOAD_DIR}")
             return None
 
         candidates.sort(key=lambda p: p.stat().st_ctime, reverse=True)
@@ -115,19 +117,19 @@ class FridaStartupClient:
             sys.exit(1)
 
         output = result.stdout.strip()
-        downloaded_files = []
+        downloaded_files = set()
         for line in output.splitlines():
             line = line.strip()
             if config.FRIDA_DOWNLOAD_DIR.name in line or "frida-server" in line:
                 for potential_path in line.split():
                     p = Path(potential_path.strip())
                     if p.exists() and "frida-server" in p.name:
-                        downloaded_files.append(p)
+                        downloaded_files.add(p)
 
         if not downloaded_files:
             for path in config.FRIDA_DOWNLOAD_DIR.glob("frida-server-*-android-arm64.*"):
                 if path.is_file() and path.name.endswith((".xz", ".gz", ".bz2", ".tar")):
-                    downloaded_files.append(path)
+                    downloaded_files.add(path)
 
         if len(downloaded_files) == 0:
             log.error("下载完成但未找到下载的文件")
@@ -140,7 +142,7 @@ class FridaStartupClient:
             )
             sys.exit(1)
 
-        archive_path = downloaded_files[0]
+        archive_path = next(iter(downloaded_files))
         log.info("下载完成: %s", archive_path)
         return archive_path
 

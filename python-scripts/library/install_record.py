@@ -7,7 +7,7 @@ from .log import log
 
 
 def ensure_record_dir() -> None:
-    """Create ~/mobile-arsenal/frida/ directory if it doesn't exist."""
+    """Create ~/bw-frida/frida-server/ directory if it doesn't exist."""
     config.FRIDA_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 

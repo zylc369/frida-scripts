@@ -1,15 +1,12 @@
 import string
 from pathlib import Path
 
-# Virtual environment
-VENV_DIR_NAME = ".venv-frida"
-
 # Directory layout
 SCRIPT_DIR = Path(__file__).resolve().parent.parent  # python-scripts/
 PROJECT_DIR = SCRIPT_DIR.parent  # frida-scripts/
 
 # Frida data directories
-FRIDA_BASE_DIR = Path("~/mobile-arsenal/frida").expanduser()
+FRIDA_BASE_DIR = Path("~/bw-frida/frida-server").expanduser()
 FRIDA_DOWNLOAD_DIR = FRIDA_BASE_DIR / "download"
 INSTALL_RECORD_PATH = FRIDA_BASE_DIR / "install_record.json"
 
