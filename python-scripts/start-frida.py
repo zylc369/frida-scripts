@@ -237,6 +237,11 @@ class FridaStartupClient:
 
         if self._config.serial and self._host_port:
             adb.remove_forward(self._config.serial, self._host_port)
+            install_record.update_device_record(
+                self._config.serial,
+                hostTcpPort=None,
+                androidTcpPort=None,
+            )
         if self._process and self._process.poll() is None:
             self._process.terminate()
             try:

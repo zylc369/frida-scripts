@@ -54,7 +54,11 @@ def update_device_record(device_id: str, **fields) -> None:
                 data = {}
             if device_id not in data:
                 data[device_id] = {}
-            data[device_id].update(fields)
+            data[device_id].update(
+                {k: v for k, v in fields.items() if v is not None}
+            )
+            for k in [k for k, v in fields.items() if v is None]:
+                data[device_id].pop(k, None)
             f.seek(0)
             f.truncate()
             json.dump(data, f, indent=2, ensure_ascii=False)
