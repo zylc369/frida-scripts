@@ -2,7 +2,7 @@
 
 ## 前言
 
-**全部都是针对`start-frida.py`功能的升级。**
+**全部都是针对`python-scripts/start-frida.py`功能的升级。**
 
 
 
