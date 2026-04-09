@@ -6,3 +6,6 @@ frida==17.9.1
 
 # 每次跑 pip install -r requirements.txt 都要拿到 frida-tools 最新版
 frida-tools>=0.0.0
+
+# GUI 模式依赖 (python start-frida.py --gui)
+PySide6>=6.5.0
