@@ -7,32 +7,22 @@ import threading
 from pathlib import Path
 from tkinter import (
     BOTH,
-    END,
     LEFT,
     RIGHT,
     W,
-    Button,
-    Canvas,
     Entry,
     Frame,
     Label,
-    Scrollbar,
     StringVar,
     Tk,
     Toplevel,
 )
+from tkinter.ttk import Button as TtkButton
+from tkinter.ttk import Style, Treeview
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .frida_ops import AppInfo
-
-
-_BG = "#f5f5f5"
-_HEADER_BG = "#e3f2fd"
-_RUNNING_FG = "#2e7d32"
-_STOPPED_FG = "#9e9e9e"
-_ROW_EVEN = "#ffffff"
-_ROW_ODD = "#f0f0f0"
 
 
 class FridaManagerWindow:
@@ -53,18 +43,18 @@ class FridaManagerWindow:
         self._spawned_processes: list[subprocess.Popen] = []
         self._search_var: StringVar | None = None
         self._root: Tk | None = None
-        self._scroll_frame: Frame | None = None
-        self._canvas: Canvas | None = None
+        self._tree: Treeview | None = None
+        self._app_map: dict[str, AppInfo] = {}
 
     def run(self) -> None:
         root = Tk()
         root.title("Frida Manager")
         root.geometry("960x680")
         root.minsize(720, 480)
-        root.configure(bg=_BG)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._root = root
 
+        self._setup_style(root)
         self._build_info_panel(root)
         self._build_search_bar(root)
         self._build_app_list(root)
@@ -75,8 +65,17 @@ class FridaManagerWindow:
         root.mainloop()
         self._cleanup_spawned()
 
+    def _setup_style(self, root: Tk) -> None:
+        style = Style(root)
+        style.theme_use("default")
+        style.configure("Kill.TButton", foreground="#c62828", font=("Helvetica", 9, "bold"))
+        style.configure("Spawn.TButton", foreground="#2e7d32", font=("Helvetica", 9, "bold"))
+        style.configure("Refresh.TButton", font=("Helvetica", 10))
+        style.configure("Treeview", rowheight=26, font=("Helvetica", 9))
+        style.configure("Treeview.Heading", font=("Helvetica", 9, "bold"))
+
     def _build_info_panel(self, parent: Tk) -> None:
-        panel = Frame(parent, bg=_HEADER_BG, padx=12, pady=4)
+        panel = Frame(parent, padx=12, pady=4)
         panel.pack(fill="x", padx=8, pady=(8, 0))
 
         info_text = (
@@ -85,90 +84,117 @@ class FridaManagerWindow:
             f"主机端口: {self.host_port}    "
             f"Frida路径: {self.frida_server_path}"
         )
-        entry = Entry(
-            panel, font=("Helvetica", 10), readonlybackground=_HEADER_BG,
-            fg="#1a237e", bd=0, relief="flat",
-        )
+        entry = Entry(panel, font=("Helvetica", 10), bd=0, relief="flat")
         entry.insert(0, info_text)
         entry.configure(state="readonly")
         entry.pack(fill="x")
 
     def _build_search_bar(self, parent: Tk) -> None:
-        bar = Frame(parent, bg=_BG, padx=8, pady=6)
+        bar = Frame(parent, padx=8, pady=6)
         bar.pack(fill="x")
 
-        Label(bar, text="搜索:", bg=_BG, font=("Helvetica", 10)).pack(side=LEFT, padx=(0, 6))
+        Label(bar, text="搜索:", font=("Helvetica", 10)).pack(side=LEFT, padx=(0, 6))
 
         self._search_var = StringVar()
         self._search_var.trace_add("write", lambda *_: self._render_apps())
-        search_entry = Entry(
+        Entry(
             bar,
             textvariable=self._search_var,
             font=("Helvetica", 10),
             width=60,
-        )
-        search_entry.pack(side=LEFT, fill="x", expand=True)
+        ).pack(side=LEFT, fill="x", expand=True)
 
-        Button(
+        TtkButton(
             bar,
             text="刷新",
             command=self._refresh_apps,
-            font=("Helvetica", 10),
-            padx=12,
+            style="Refresh.TButton",
         ).pack(side=RIGHT, padx=(6, 0))
 
     def _build_app_list(self, parent: Tk) -> None:
-        header = Frame(parent, bg="#e0e0e0", padx=8, pady=4)
-        header.pack(fill="x", padx=8, pady=(4, 0))
+        container = Frame(parent)
+        container.pack(fill=BOTH, expand=True, padx=8, pady=(0, 8))
 
-        columns = [
-            ("状态", 10),
-            ("PID", 8),
-            ("应用名", 22),
-            ("包名", 36),
-            ("操作", 12),
-        ]
-        for text, width in columns:
-            Label(
-                header,
-                text=text,
-                bg="#e0e0e0",
-                fg="#424242",
-                font=("Helvetica", 9, "bold"),
-                width=width,
-                anchor=W,
-            ).pack(side=LEFT)
+        btn_bar = Frame(container)
+        btn_bar.pack(fill="x", pady=(4, 2))
 
-        list_frame = Frame(parent, bg=_BG)
-        list_frame.pack(fill=BOTH, expand=True, padx=8, pady=(0, 8))
+        TtkButton(btn_bar, text="Kill 选中进程", style="Kill.TButton",
+                  command=self._kill_selected).pack(side=LEFT, padx=(0, 6))
+        TtkButton(btn_bar, text="启动选中应用", style="Spawn.TButton",
+                  command=self._spawn_selected).pack(side=LEFT)
 
-        canvas = Canvas(list_frame, bg=_BG, highlightthickness=0)
-        scrollbar = Scrollbar(list_frame, orient="vertical", command=canvas.yview)
-        self._scroll_frame = Frame(canvas, bg=_BG)
-        self._canvas = canvas
-
-        self._scroll_frame.bind(
-            "<Configure>",
-            lambda _: canvas.configure(scrollregion=canvas.bbox("all")),
+        columns = ("status", "pid", "name", "identifier")
+        tree = Treeview(
+            container,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
         )
-        canvas.create_window((0, 0), window=self._scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        tree.heading("status", text="状态")
+        tree.heading("pid", text="PID")
+        tree.heading("name", text="应用名")
+        tree.heading("identifier", text="包名")
+        tree.column("status", width=80, anchor=W)
+        tree.column("pid", width=70, anchor=W)
+        tree.column("name", width=220, anchor=W)
+        tree.column("identifier", width=360, anchor=W)
 
-        scrollbar.pack(side=RIGHT, fill="y")
-        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        scrollbar_style = Style(parent)
+        scrollbar_style.configure("Vertical.TScrollbar")
 
-        import platform
-        if platform.system() == "Darwin":
-            canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-e.delta, "units"))
+        tree.configure(yscrollcommand=lambda *a: None)
+        from tkinter.ttk import Scrollbar as TtkScrollbar
+        vsb = TtkScrollbar(container, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+
+        vsb.pack(side=RIGHT, fill="y")
+        tree.pack(fill=BOTH, expand=True)
+
+        tree.bind("<Double-1>", self._on_double_click)
+
+        self._tree = tree
+
+    def _on_double_click(self, event) -> None:
+        if self._tree is None:
+            return
+        selection = self._tree.selection()
+        if not selection:
+            return
+        iid = selection[0]
+        app = self._app_map.get(iid)
+        if app is None:
+            return
+        if app.is_running:
+            self._do_kill(app)
         else:
-            canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+            self._do_spawn(app)
+
+    def _kill_selected(self) -> None:
+        if self._tree is None:
+            return
+        selection = self._tree.selection()
+        if not selection:
+            return
+        app = self._app_map.get(selection[0])
+        if app:
+            self._do_kill(app)
+
+    def _spawn_selected(self) -> None:
+        if self._tree is None:
+            return
+        selection = self._tree.selection()
+        if not selection:
+            return
+        app = self._app_map.get(selection[0])
+        if app:
+            self._do_spawn(app)
 
     def _render_apps(self) -> None:
-        if self._scroll_frame is None:
+        if self._tree is None:
             return
 
-        for widget in self._scroll_frame.winfo_children():
-            widget.destroy()
+        self._tree.delete(*self._tree.get_children())
+        self._app_map.clear()
 
         search = (self._search_var.get() if self._search_var else "").lower()
 
@@ -183,53 +209,22 @@ class FridaManagerWindow:
         stopped = [a for a in filtered if not a.is_running]
         ordered = running + stopped
 
-        for i, app in enumerate(ordered):
-            row_bg = _ROW_EVEN if i % 2 == 0 else _ROW_ODD
-            row = Frame(self._scroll_frame, bg=row_bg, padx=8, pady=3)
-            row.pack(fill="x")
-
+        for idx, app in enumerate(ordered):
             if app.is_running:
-                status_text = "运行中"
-                status_fg = _RUNNING_FG
-                pid_text = str(app.pid)
+                status = "运行中"
+                pid = str(app.pid)
+                tag = "running"
             else:
-                status_text = "未运行"
-                status_fg = _STOPPED_FG
-                pid_text = "-"
+                status = "未运行"
+                pid = "-"
+                tag = "stopped"
 
-            Label(
-                row, text=status_text, bg=row_bg, fg=status_fg,
-                font=("Helvetica", 9), width=10, anchor=W,
-            ).pack(side=LEFT)
-            Label(
-                row, text=pid_text, bg=row_bg, fg="#424242",
-                font=("Helvetica", 9), width=8, anchor=W,
-            ).pack(side=LEFT)
-            Label(
-                row, text=app.name, bg=row_bg, fg="#212121",
-                font=("Helvetica", 9), width=22, anchor=W,
-            ).pack(side=LEFT)
-            Label(
-                row, text=app.identifier, bg=row_bg, fg="#616161",
-                font=("Helvetica", 9), width=36, anchor=W,
-            ).pack(side=LEFT)
+            iid = str(idx)
+            self._tree.insert("", "end", iid=iid, values=(status, pid, app.name, app.identifier), tags=(tag,))
+            self._app_map[iid] = app
 
-            if app.is_running:
-                Button(
-                    row,
-                    text="Kill",
-                    font=("Helvetica", 9, "bold"),
-                    padx=8,
-                    command=lambda a=app: self._do_kill(a),
-                ).pack(side=LEFT, padx=(4, 0))
-            else:
-                Button(
-                    row,
-                    text="启动",
-                    font=("Helvetica", 9, "bold"),
-                    padx=8,
-                    command=lambda a=app: self._do_spawn(a),
-                ).pack(side=LEFT, padx=(4, 0))
+        self._tree.tag_configure("running", foreground="#2e7d32")
+        self._tree.tag_configure("stopped", foreground="#9e9e9e")
 
     def _refresh_apps(self) -> None:
         def _worker() -> None:
@@ -291,18 +286,16 @@ class FridaManagerWindow:
         dialog = Toplevel(self._root)
         dialog.title("选择 Hook 脚本")
         dialog.geometry("480x360")
-        dialog.configure(bg=_BG)
         dialog.transient(self._root)
         dialog.grab_set()
 
         Label(
             dialog,
             text="选择要加载的 Hook 脚本:",
-            bg=_BG,
             font=("Helvetica", 11, "bold"),
         ).pack(pady=(12, 8))
 
-        btn_frame = Frame(dialog, bg=_BG)
+        btn_frame = Frame(dialog)
         btn_frame.pack(fill=BOTH, expand=True, padx=16)
 
         def on_select(val: Path | None) -> None:
@@ -310,30 +303,21 @@ class FridaManagerWindow:
             dialog.destroy()
 
         for script in scripts:
-            Button(
+            TtkButton(
                 btn_frame,
                 text=script.name,
-                font=("Helvetica", 10),
-                padx=12,
-                pady=4,
                 command=lambda s=script: on_select(s),
             ).pack(fill="x", pady=2)
 
-        Button(
+        TtkButton(
             btn_frame,
             text="无脚本 (直接启动)",
-            font=("Helvetica", 10),
-            padx=12,
-            pady=4,
             command=lambda: on_select(Path("__none__")),
         ).pack(fill="x", pady=(8, 2))
 
-        Button(
+        TtkButton(
             btn_frame,
             text="取消",
-            font=("Helvetica", 10),
-            padx=12,
-            pady=4,
             command=lambda: on_select(None),
         ).pack(fill="x", pady=2)
 
