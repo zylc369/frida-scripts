@@ -39,8 +39,10 @@ def get_running_apps(host_port: int) -> list[AppInfo]:
         stripped = line.strip()
         if not stripped:
             continue
-        parts = stripped.split()
-        if not parts or parts[0] == "PID" or parts[0].startswith("----"):
+        parts = stripped.split(None, 1)
+        if not parts:
+            continue
+        if parts[0] == "PID" or parts[0].startswith("----"):
             continue
         if len(parts) < 2:
             continue

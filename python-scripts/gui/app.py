@@ -76,29 +76,22 @@ class FridaManagerWindow:
         self._cleanup_spawned()
 
     def _build_info_panel(self, parent: Tk) -> None:
-        panel = Frame(parent, bg=_HEADER_BG, padx=12, pady=8)
+        panel = Frame(parent, bg=_HEADER_BG, padx=12, pady=4)
         panel.pack(fill="x", padx=8, pady=(8, 0))
 
-        fields = [
-            ("设备ID", self.device_id),
-            ("Android端口", str(self.android_port)),
-            ("主机端口", str(self.host_port)),
-            ("Frida路径", self.frida_server_path),
-        ]
-        for label_text, value_text in fields:
-            row = Frame(panel, bg=_HEADER_BG)
-            row.pack(fill="x", pady=1)
-            Label(
-                row, text=label_text + ": ", bg=_HEADER_BG, fg="#1a237e",
-                font=("Helvetica", 10, "bold"), anchor=W,
-            ).pack(side=LEFT)
-            entry = Entry(
-                row, font=("Helvetica", 10), readonlybackground=_HEADER_BG,
-                fg="#1a237e", bd=0, relief="flat",
-            )
-            entry.insert(0, value_text)
-            entry.configure(state="readonly")
-            entry.pack(side=LEFT, fill="x", expand=True)
+        info_text = (
+            f"设备ID: {self.device_id}    "
+            f"Android端口: {self.android_port}    "
+            f"主机端口: {self.host_port}    "
+            f"Frida路径: {self.frida_server_path}"
+        )
+        entry = Entry(
+            panel, font=("Helvetica", 10), readonlybackground=_HEADER_BG,
+            fg="#1a237e", bd=0, relief="flat",
+        )
+        entry.insert(0, info_text)
+        entry.configure(state="readonly")
+        entry.pack(fill="x")
 
     def _build_search_bar(self, parent: Tk) -> None:
         bar = Frame(parent, bg=_BG, padx=8, pady=6)
