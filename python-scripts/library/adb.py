@@ -29,11 +29,57 @@ def get_devices() -> list[str]:
     return devices
 
 
+def select_device_interactive(devices: list[str]) -> str:
+    """Arrow-key device selection using curses. Falls back to numbered input."""
+    try:
+        import curses
+
+        def _curses_pick(stdscr: curses.window) -> int:
+            curses.curs_set(0)
+            selected = 0
+            while True:
+                stdscr.clear()
+                stdscr.addstr(0, 0, "检测到多台 Android 设备 (上下键选择，回车确认):")
+                for i, device in enumerate(devices):
+                    prefix = " > " if i == selected else "   "
+                    stdscr.addstr(i + 2, 0, f"{prefix}{device}")
+                stdscr.refresh()
+
+                key = stdscr.getch()
+                if key == curses.KEY_UP and selected > 0:
+                    selected -= 1
+                elif key == curses.KEY_DOWN and selected < len(devices) - 1:
+                    selected += 1
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    return selected
+                elif key == ord("q"):
+                    sys.exit(0)
+
+        idx = curses.wrapper(_curses_pick)
+        return devices[idx]
+    except (ImportError, Exception):
+        pass
+
+    print("检测到多台 Android 设备:")
+    for i, device in enumerate(devices, start=1):
+        print(f"  {i}) {device}")
+
+    while True:
+        try:
+            choice = input("请选择设备 (输入序号): ")
+            index = int(choice.strip())
+            if 1 <= index <= len(devices):
+                return devices[index - 1]
+            print(f"无效的序号，请输入 1-{len(devices)} 之间的数字")
+        except ValueError:
+            print("请输入有效的数字")
+
+
 def resolve_device(serial: str | None) -> str:
     """Determine which device to use.
 
     - No devices -> log error, raise SystemExit
-    - Multiple devices and no serial -> log error, raise SystemExit
+    - Multiple devices and no serial -> interactive selection
     - Single device and no serial -> return that device's serial
     - Serial specified -> verify it's in device list, else raise SystemExit
     """
@@ -48,11 +94,8 @@ def resolve_device(serial: str | None) -> str:
             log.info("检测到设备: %s", devices[0])
             return devices[0]
         else:
-            log.error(
-                "检测到多台 Android 设备 (%s)，请使用 -s 参数指定设备 ID",
-                ", ".join(devices),
-            )
-            sys.exit(1)
+            log.info("检测到多台 Android 设备:")
+            return select_device_interactive(devices)
 
     if serial not in devices:
         log.error(

@@ -22,12 +22,15 @@ from library.random_name import generate_random_name
 class FridaStartupConfig:
     serial: str
     upgrade: bool
+    gui: bool = False
 
 
 class FridaStartupClient:
     def __init__(self, config: FridaStartupConfig) -> None:
         self._config: FridaStartupConfig = config
         self._host_port: int | None = None
+        self._android_port: int | None = None
+        self._frida_install_path: str | None = None
         self._process: subprocess.Popen | None = None
         self._cleanup_registered: bool = False
 
@@ -40,8 +43,12 @@ class FridaStartupClient:
         self._register_cleanup()
         log.info("===== frida-server 启动完成 =====")
         log.info("连接信息: 127.0.0.1:%d", self._host_port)
-        log.info("按 Ctrl+C 停止 frida-server")
-        self._wait()
+
+        if self._config.gui:
+            self._launch_gui()
+        else:
+            log.info("按 Ctrl+C 停止 frida-server")
+            self._wait()
 
     # --- step1: download ---
     def _prepare_server(self) -> Path | None:
@@ -213,6 +220,8 @@ class FridaStartupClient:
         log.info("frida-server 已启动")
         log.info("主机端口 %d -> Android 端口 %d (设备: %s)", host_port, android_port, self._config.serial)
         self._host_port = host_port
+        self._android_port = android_port
+        self._frida_install_path = install_path
         self._process = frida_process
 
     # --- cleanup ---
@@ -250,6 +259,20 @@ class FridaStartupClient:
             except subprocess.TimeoutExpired:
                 self._process.kill()
 
+    def _launch_gui(self) -> None:
+        from gui.app import launch_gui
+
+        assert self._host_port is not None
+        assert self._android_port is not None
+
+        log.info("正在启动 GUI 模式...")
+        launch_gui(
+            device_id=self._config.serial,
+            host_port=self._host_port,
+            android_port=self._android_port,
+            frida_server_path=self._frida_install_path or "unknown",
+        )
+
     def _wait(self) -> None:
         assert self._process is not None
         try:
@@ -273,6 +296,11 @@ def parse_args() -> argparse.Namespace:
         metavar="SERIAL",
         help="使用指定 serial 的设备 (覆盖 $ANDROID_SERIAL)",
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="启动 frida-server 后打开 GUI 管理界面",
+    )
     return parser.parse_args()
 
 
@@ -281,6 +309,7 @@ def main() -> None:
     client_config = FridaStartupConfig(
         serial=adb.resolve_device(args.serial),
         upgrade=args.upgrade,
+        gui=args.gui,
     )
     FridaStartupClient(client_config).start()
 

@@ -1,0 +1,1 @@
+"""Frida GUI management package."""
