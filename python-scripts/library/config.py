@@ -9,6 +9,7 @@ PROJECT_DIR = SCRIPT_DIR.parent  # frida-scripts/
 FRIDA_BASE_DIR = Path("~/bw-frida/frida-server").expanduser()
 FRIDA_DOWNLOAD_DIR = FRIDA_BASE_DIR / "download"
 INSTALL_RECORD_PATH = FRIDA_BASE_DIR / "install_record.json"
+FRIDA_DB_PATH = FRIDA_BASE_DIR / "frida.db"
 
 # Requirements
 REQUIREMENTS_FILE = PROJECT_DIR / "requirements.txt"

@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import subprocess
 import threading
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QTimer, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QTimer, Qt, QThread, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHeaderView,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
+    QMenu,
     QPushButton,
     QTreeWidgetItem,
     QWidget,
@@ -23,12 +24,16 @@ from PySide6.QtWidgets import (
     QLabel,
 )
 
+from library import database
+from .toast import ToastWidget
+
 if TYPE_CHECKING:
     from .frida_ops import AppInfo
 
+_DEVICE_TYPE_ANDROID = "android"
+
 
 class RefreshWorker(QThread):
-    """Background thread to fetch app list from frida-ps."""
     finished = Signal(list)
 
     def __init__(self, host_port: int) -> None:
@@ -46,7 +51,6 @@ class RefreshWorker(QThread):
 
 
 class FridaManagerWindow(QMainWindow):
-    """Qt-based GUI for managing frida sessions on Android devices."""
 
     def __init__(
         self,
@@ -65,9 +69,11 @@ class FridaManagerWindow(QMainWindow):
         self._worker: RefreshWorker | None = None
         self._last_fingerprint = ""
 
+        database.init_db()
+
         self.setWindowTitle("Frida Manager")
-        self.resize(960, 680)
-        self.setMinimumSize(720, 480)
+        self.resize(1100, 680)
+        self.setMinimumSize(800, 480)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -92,8 +98,11 @@ class FridaManagerWindow(QMainWindow):
             f"Frida路径: {self.frida_server_path}",
         )
         info.setReadOnly(True)
-        info.setFocusPolicy(Qt.NoFocus)
-        info.setStyleSheet("background: #e3f2fd; color: #1a237e; border: none; padding: 6px; font-size: 13px;")
+        info.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        info.setStyleSheet(
+            "background: #e3f2fd; color: #1a237e; border: none; "
+            "padding: 6px; font-size: 13px;"
+        )
         return info
 
     def _build_search_bar(self) -> QHBoxLayout:
@@ -119,12 +128,16 @@ class FridaManagerWindow(QMainWindow):
         bar = QHBoxLayout()
 
         self._kill_btn = QPushButton("Kill 选中进程")
-        self._kill_btn.setStyleSheet("color: #c62828; font-weight: bold; font-size: 13px; padding: 4px 12px;")
+        self._kill_btn.setStyleSheet(
+            "color: #c62828; font-weight: bold; font-size: 13px; padding: 4px 12px;"
+        )
         self._kill_btn.clicked.connect(self._kill_selected)
         bar.addWidget(self._kill_btn)
 
         self._spawn_btn = QPushButton("启动选中应用")
-        self._spawn_btn.setStyleSheet("color: #2e7d32; font-weight: bold; font-size: 13px; padding: 4px 12px;")
+        self._spawn_btn.setStyleSheet(
+            "color: #2e7d32; font-weight: bold; font-size: 13px; padding: 4px 12px;"
+        )
         self._spawn_btn.clicked.connect(self._spawn_selected)
         bar.addWidget(self._spawn_btn)
 
@@ -133,33 +146,82 @@ class FridaManagerWindow(QMainWindow):
 
     def _build_app_list(self) -> QTreeWidget:
         tree = QTreeWidget()
-        tree.setHeaderLabels(["#", "状态", "PID", "应用名", "包名"])
+        tree.setHeaderLabels(["#", "状态", "PID", "应用名", "包名", "操作"])
         tree.setAlternatingRowColors(True)
-        tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         tree.setSortingEnabled(False)
-        tree.setFocusPolicy(Qt.StrongFocus)
+        tree.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tree.customContextMenuRequested.connect(self._on_context_menu)
+        tree.installEventFilter(self)
 
         header = tree.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Interactive)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
-        header.resizeSection(3, 220)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.resizeSection(3, 180)
+        header.resizeSection(4, 220)
 
         self._tree = tree
         return tree
+
+    def eventFilter(self, obj, event):
+        if hasattr(self, "_tree") and obj is self._tree and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self._tree.hasFocus():
+                    self._spawn_selected()
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _on_context_menu(self, pos) -> None:
+        item = self._tree.itemAt(pos)
+        if item is None:
+            return
+
+        col = self._tree.columnAt(pos.x())
+        if col not in (2, 3, 4):
+            return
+
+        text = item.text(col)
+        if not text or text == "-":
+            return
+
+        menu = QMenu(self._tree)
+        copy_action = QAction(f"复制: {text[:40]}{'…' if len(text) > 40 else ''}", menu)
+        copy_action.triggered.connect(lambda: self._copy_text(text))
+        menu.addAction(copy_action)
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _copy_text(text: str) -> None:
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+
+    def _open_script_dialog(self, app_identifier: str, app_name: str) -> None:
+        from .script_dialog import ScriptBindDialog
+
+        dlg = ScriptBindDialog(self, self.device_id, app_identifier, app_name)
+        dlg.exec()
 
     def _on_search_changed(self) -> None:
         self._render_apps(force=True)
 
     def _render_apps(self, force: bool = False) -> None:
-        search = self._search_input.text().lower() if hasattr(self, "_search_input") else ""
+        search = (
+            self._search_input.text().lower()
+            if hasattr(self, "_search_input")
+            else ""
+        )
 
         filtered = self._all_apps
         if search:
             filtered = [
-                app for app in self._all_apps
+                app
+                for app in self._all_apps
                 if search in app.name.lower() or search in app.identifier.lower()
             ]
 
@@ -177,7 +239,7 @@ class FridaManagerWindow(QMainWindow):
         prev_id = ""
         selected = self._tree.selectedItems()
         if selected:
-            prev_id = selected[0].data(0, Qt.UserRole) or ""
+            prev_id = selected[0].data(0, Qt.ItemDataRole.UserRole) or ""
 
         vscroll = self._tree.verticalScrollBar()
         scroll_pos = vscroll.value()
@@ -187,16 +249,27 @@ class FridaManagerWindow(QMainWindow):
         for idx, app in enumerate(ordered):
             status = "运行中" if app.is_running else "未运行"
             pid = str(app.pid) if app.is_running else "-"
-            item = QTreeWidgetItem([str(idx + 1), status, pid, app.name, app.identifier])
-            item.setData(0, Qt.UserRole, app.identifier)
+            item = QTreeWidgetItem(
+                [str(idx + 1), status, pid, app.name, app.identifier, ""]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, app.identifier)
 
             if app.is_running:
-                item.setForeground(1, Qt.darkGreen)
+                item.setForeground(1, Qt.GlobalColor.darkGreen)
             else:
-                item.setForeground(1, Qt.gray)
-                item.setForeground(2, Qt.gray)
+                item.setForeground(1, Qt.GlobalColor.gray)
+                item.setForeground(2, Qt.GlobalColor.gray)
 
             self._tree.addTopLevelItem(item)
+
+            btn = QPushButton("配置脚本")
+            btn.setStyleSheet("font-size: 12px; padding: 2px 8px;")
+            identifier = app.identifier
+            name = app.name
+            btn.clicked.connect(
+                lambda checked=False, _id=identifier, _n=name: self._open_script_dialog(_id, _n)
+            )
+            self._tree.setItemWidget(item, 5, btn)
 
             if app.identifier == prev_id:
                 self._tree.setCurrentItem(item)
@@ -218,8 +291,10 @@ class FridaManagerWindow(QMainWindow):
         selected = self._tree.selectedItems()
         if not selected:
             return
-        identifier = selected[0].data(0, Qt.UserRole) or ""
-        app = next((a for a in self._all_apps if a.identifier == identifier), None)
+        identifier = selected[0].data(0, Qt.ItemDataRole.UserRole) or ""
+        app = next(
+            (a for a in self._all_apps if a.identifier == identifier), None
+        )
         if app:
             self._do_kill(app)
 
@@ -227,8 +302,10 @@ class FridaManagerWindow(QMainWindow):
         selected = self._tree.selectedItems()
         if not selected:
             return
-        identifier = selected[0].data(0, Qt.UserRole) or ""
-        app = next((a for a in self._all_apps if a.identifier == identifier), None)
+        identifier = selected[0].data(0, Qt.ItemDataRole.UserRole) or ""
+        app = next(
+            (a for a in self._all_apps if a.identifier == identifier), None
+        )
         if app:
             self._do_spawn(app)
 
@@ -241,58 +318,36 @@ class FridaManagerWindow(QMainWindow):
 
             success = kill_app(self.host_port, app.pid)
             if success:
-                print(f"[Frida Manager] 已终止 {app.identifier} (PID {app.pid})")
+                QTimer.singleShot(0, lambda: ToastWidget.show_success(
+                    self, f"已终止 {app.identifier} (PID {app.pid})"
+                ))
             else:
-                print(f"[Frida Manager] 终止 {app.identifier} 失败")
+                QTimer.singleShot(0, lambda: ToastWidget.show_error(
+                    self, f"终止 {app.identifier} 失败"
+                ))
             QTimer.singleShot(0, self._refresh_apps)
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _do_spawn(self, app: AppInfo) -> None:
-        from .frida_ops import find_hook_scripts, spawn_app
+        from .frida_ops import spawn_app
 
-        scripts = find_hook_scripts()
-        script_arg = None
-        if scripts:
-            selected = self._show_script_dialog(scripts)
-            if selected is None:
-                return
-            script_arg = str(selected) if selected != Path("__none__") else None
+        bindings = database.query_scripts(_DEVICE_TYPE_ANDROID, app.identifier)
+        script_paths: list[str] | None = (
+            [row["script_path"] for row in bindings] if bindings else None
+        )
 
-        proc = spawn_app(self.host_port, app.identifier, script_arg)
+        proc, err = spawn_app(self.host_port, app.identifier, script_paths)
         if proc:
             self._spawned_processes.append(proc)
-            label = script_arg or "无脚本"
-            print(f"[Frida Manager] 已启动 {app.identifier} ({label})")
+            label = ", ".join(script_paths) if script_paths else "无脚本"
+            ToastWidget.show_success(self, f"已启动 {app.identifier} ({label})")
         else:
-            print(f"[Frida Manager] 启动 {app.identifier} 失败")
+            msg = f"启动 {app.identifier} 失败"
+            if err:
+                msg += f": {err}"
+            ToastWidget.show_error(self, msg)
         QTimer.singleShot(2000, self._refresh_apps)
-
-    def _show_script_dialog(self, scripts: list[Path]) -> Path | None:
-        items = [s.name for s in scripts] + ["无脚本 (直接启动)"]
-        choice, ok = QTreeWidgetItem(), False
-
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle("选择 Hook 脚本")
-        dialog.setText("选择要加载的 Hook 脚本:")
-        dialog.setStandardButtons(QMessageBox.Cancel)
-
-        for i, script_name in enumerate(items):
-            btn = dialog.addButton(script_name, QMessageBox.ActionRole)
-            btn.setProperty("script_index", i)
-
-        result = dialog.exec()
-
-        clicked = dialog.clickedButton()
-        if clicked is None or result == QMessageBox.Cancel:
-            return None
-
-        idx = clicked.property("script_index")
-        if idx is None:
-            return None
-        if idx >= len(scripts):
-            return Path("__none__")
-        return scripts[idx]
 
     def closeEvent(self, event) -> None:
         self._timer.stop()

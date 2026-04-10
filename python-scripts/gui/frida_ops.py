@@ -1,7 +1,7 @@
 """Frida CLI operations: list apps, kill processes, spawn apps."""
+
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass
@@ -139,37 +139,30 @@ def kill_app(host_port: int, pid: int) -> bool:
     return proc.returncode == 0
 
 
-def spawn_app(
+def build_spawn_cmd(
     host_port: int,
     package: str,
-    script_path: str | None = None,
-) -> subprocess.Popen | None:
-    """Spawn an app via ``frida -H … -f <package>``.
-
-    If *script_path* is given the ``-l`` flag is added to load the hook script.
-    Returns the :class:`subprocess.Popen` handle (non-blocking) or ``None`` on
-    error.
-    """
+    script_paths: list[str] | None = None,
+) -> list[str]:
     cmd = [
         "frida",
         "-H", f"127.0.0.1:{host_port}",
         "-f", package,
     ]
-    if script_path:
-        cmd.extend(["-l", script_path])
+    if script_paths:
+        for sp in script_paths:
+            cmd.extend(["-l", sp])
     cmd.append("--no-pause")
+    return cmd
 
+
+def spawn_app(
+    host_port: int,
+    package: str,
+    script_paths: list[str] | None = None,
+) -> tuple[subprocess.Popen | None, str | None]:
+    cmd = build_spawn_cmd(host_port, package, script_paths)
     try:
-        return subprocess.Popen(cmd)
-    except OSError:
-        return None
-
-
-def find_hook_scripts() -> list[Path]:
-    """Glob ``**/*.js`` from the project root and return matching paths.
-
-    The project root is assumed to be three levels above this file
-    (``python-scripts/gui/frida_ops.py`` → project root).
-    """
-    project_root = Path(__file__).resolve().parent.parent.parent
-    return sorted(project_root.glob("**/*.js"))
+        return subprocess.Popen(cmd), None
+    except OSError as exc:
+        return None, str(exc)
