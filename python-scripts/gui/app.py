@@ -11,6 +11,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QFrame,
     QHeaderView,
     QLineEdit,
     QMainWindow,
@@ -85,8 +86,7 @@ class FridaManagerWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
 
         layout.addWidget(self._build_info_panel())
-        layout.addLayout(self._build_search_bar())
-        layout.addLayout(self._build_action_bar())
+        layout.addLayout(self._build_toolbar())
         layout.addWidget(self._build_app_list())
 
         self._refresh_apps()
@@ -109,11 +109,12 @@ class FridaManagerWindow(QMainWindow):
         )
         return info
 
-    def _build_search_bar(self) -> QHBoxLayout:
+    def _build_toolbar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
-        label = QLabel("🔍")
-        label.setStyleSheet("font-size: 15px;")
-        bar.addWidget(label)
+
+        search_icon = QLabel("🔍")
+        search_icon.setStyleSheet("font-size: 15px;")
+        bar.addWidget(search_icon)
 
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("输入包名或应用名搜索...")
@@ -141,10 +142,10 @@ class FridaManagerWindow(QMainWindow):
         refresh_btn.clicked.connect(self._refresh_apps)
         bar.addWidget(refresh_btn)
 
-        return bar
-
-    def _build_action_bar(self) -> QHBoxLayout:
-        bar = QHBoxLayout()
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setStyleSheet("color: #cfd8dc;")
+        bar.addWidget(sep)
 
         self._kill_btn = QPushButton("Kill 选中进程")
         self._kill_btn.setStyleSheet(
@@ -201,7 +202,6 @@ class FridaManagerWindow(QMainWindow):
         spawn_layout.addWidget(self._copy_cmd_btn)
 
         bar.addWidget(spawn_widget)
-
         bar.addStretch()
         return bar
 
@@ -224,10 +224,11 @@ class FridaManagerWindow(QMainWindow):
             "}"
             "QTreeWidget::item { padding: 3px 0; }"
             "QTreeWidget::item:selected {"
-            "  background: #e3f2fd;"
-            "  color: #0d47a1;"
+            "  background: #1565c0;"
+            "  color: #ffffff;"
             "}"
             "QTreeWidget::item:hover { background: #f5f5f5; }"
+            "QTreeWidget::item:selected:hover { background: #1976d2; }"
             "QHeaderView::section {"
             "  background: #eceff1;"
             "  color: #37474f;"
@@ -366,6 +367,7 @@ class FridaManagerWindow(QMainWindow):
 
             btn = QPushButton("⚙")
             btn.setFixedSize(28, 24)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.setToolTip("配置脚本")
             identifier = app.identifier
             name = app.name
