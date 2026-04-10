@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from library import database
+from library.log import log
 from .toast import ToastWidget
 
 if TYPE_CHECKING:
@@ -70,6 +71,9 @@ class FridaManagerWindow(QMainWindow):
         self._last_fingerprint = ""
 
         database.init_db()
+
+        log.info("GUI 初始化: device_id=%s, host_port=%d, android_port=%d",
+                 device_id, host_port, android_port)
 
         self.setWindowTitle("Frida Manager")
         self.resize(1100, 680)
@@ -129,17 +133,59 @@ class FridaManagerWindow(QMainWindow):
 
         self._kill_btn = QPushButton("Kill 选中进程")
         self._kill_btn.setStyleSheet(
-            "color: #c62828; font-weight: bold; font-size: 13px; padding: 4px 12px;"
+            "QPushButton {"
+            "  color: #c62828; font-weight: bold; font-size: 13px; padding: 4px 12px;"
+            "  border: 1px solid #ef9a9a; border-radius: 4px;"
+            "  background: #fce4ec;"
+            "}"
+            "QPushButton:hover { background: #ffcdd2; }"
+            "QPushButton:pressed { background: #ef9a9a; }"
         )
         self._kill_btn.clicked.connect(self._kill_selected)
         bar.addWidget(self._kill_btn)
 
+        spawn_widget = QWidget()
+        spawn_layout = QHBoxLayout(spawn_widget)
+        spawn_layout.setContentsMargins(0, 0, 0, 0)
+        spawn_layout.setSpacing(0)
+
         self._spawn_btn = QPushButton("启动选中应用")
         self._spawn_btn.setStyleSheet(
-            "color: #2e7d32; font-weight: bold; font-size: 13px; padding: 4px 12px;"
+            "QPushButton {"
+            "  color: #2e7d32; font-weight: bold; font-size: 13px;"
+            "  padding: 4px 12px;"
+            "  border: 1px solid #a5d6a7;"
+            "  border-right: 1px solid #c8e6c9;"
+            "  border-top-right-radius: 0;"
+            "  border-bottom-right-radius: 0;"
+            "  background: #f1f8e9;"
+            "}"
+            "QPushButton:hover { background: #dcedc8; }"
+            "QPushButton:pressed { background: #c5e1a5; }"
         )
         self._spawn_btn.clicked.connect(self._on_spawn_btn_clicked)
-        bar.addWidget(self._spawn_btn)
+        spawn_layout.addWidget(self._spawn_btn)
+
+        self._copy_cmd_btn = QPushButton("📋")
+        self._copy_cmd_btn.setFixedSize(30, self._spawn_btn.sizeHint().height() or 28)
+        self._copy_cmd_btn.setToolTip("复制启动命令到剪贴板")
+        self._copy_cmd_btn.setStyleSheet(
+            "QPushButton {"
+            "  color: #2e7d32; font-size: 13px;"
+            "  padding: 4px 2px;"
+            "  border: 1px solid #a5d6a7;"
+            "  border-left: 1px solid #c8e6c9;"
+            "  border-top-left-radius: 0;"
+            "  border-bottom-left-radius: 0;"
+            "  background: #f1f8e9;"
+            "}"
+            "QPushButton:hover { background: #dcedc8; }"
+            "QPushButton:pressed { background: #c5e1a5; }"
+        )
+        self._copy_cmd_btn.clicked.connect(self._copy_spawn_cmd)
+        spawn_layout.addWidget(self._copy_cmd_btn)
+
+        bar.addWidget(spawn_widget)
 
         bar.addStretch()
         return bar
@@ -213,6 +259,7 @@ class FridaManagerWindow(QMainWindow):
     def _open_script_dialog(self, app_identifier: str, app_name: str) -> None:
         from .script_dialog import ScriptBindDialog
 
+        log.info("打开脚本配置对话框: %s (%s)", app_name, app_identifier)
         dlg = ScriptBindDialog(self, self.device_id, app_identifier, app_name)
         dlg.exec()
 
@@ -303,6 +350,8 @@ class FridaManagerWindow(QMainWindow):
         self._worker.start()
 
     def _update_apps(self, apps: list[AppInfo]) -> None:
+        running_count = sum(1 for a in apps if a.is_running)
+        log.debug("应用列表更新: 总计 %d 个应用, %d 个运行中", len(apps), running_count)
         self._all_apps = apps
         self._render_apps()
 
@@ -329,9 +378,30 @@ class FridaManagerWindow(QMainWindow):
         else:
             self._do_spawn(app)
 
+    def _copy_spawn_cmd(self) -> None:
+        from .frida_ops import build_spawn_cmd
+
+        app = self._selected_app()
+        if not app:
+            ToastWidget.show_error(self, "请先选中一个应用")
+            return
+
+        bindings = database.query_scripts(_DEVICE_TYPE_ANDROID, app.identifier)
+        script_paths = [row["script_path"] for row in bindings] if bindings else None
+        cmd = build_spawn_cmd(self.host_port, app.identifier, script_paths)
+        cmd_str = " ".join(cmd)
+
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(cmd_str)
+        log.info("启动命令已复制到剪贴板: %s", cmd_str)
+        ToastWidget.show_success(self, f"已复制: {cmd_str}")
+
     def _do_kill(self, app: AppInfo) -> None:
         if not app.is_running or app.pid is None:
             return
+
+        log.info("Kill 请求: %s (PID=%d)", app.identifier, app.pid)
 
         def _worker() -> None:
             from .frida_ops import kill_app
@@ -350,6 +420,9 @@ class FridaManagerWindow(QMainWindow):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _do_spawn(self, app: AppInfo) -> None:
+        log.info("启动应用请求: %s (当前状态: %s)", app.identifier,
+                 f"运行中 PID={app.pid}" if app.is_running else "未运行")
+
         def _worker() -> None:
             from .frida_ops import spawn_app
 
@@ -358,11 +431,17 @@ class FridaManagerWindow(QMainWindow):
                 [row["script_path"] for row in bindings] if bindings else None
             )
 
+            log.info("启动应用 %s, 绑定脚本数: %d, 脚本列表: %s",
+                     app.identifier,
+                     len(bindings) if bindings else 0,
+                     script_paths or [])
+
             proc, err = spawn_app(self.host_port, app.identifier, script_paths)
             if proc is None:
                 msg = f"启动 {app.identifier} 失败"
                 if err:
                     msg += f": {err}"
+                log.error("启动失败: %s", msg)
                 QTimer.singleShot(0, lambda: ToastWidget.show_error(self, msg))
                 return
 
@@ -372,6 +451,7 @@ class FridaManagerWindow(QMainWindow):
                 stdout = proc.stdout.read() if proc.stdout else ""
                 stderr = proc.stderr.read() if proc.stderr else ""
                 detail = stderr or stdout or f"exit code {proc.returncode}"
+                log.error("frida 进程异常退出: %s, stderr=%s", detail.strip(), stderr.strip())
                 QTimer.singleShot(0, lambda: ToastWidget.show_error(
                     self, f"启动 {app.identifier} 失败: {detail.strip()}"
                 ))
@@ -379,6 +459,7 @@ class FridaManagerWindow(QMainWindow):
 
             self._spawned_processes.append(proc)
             label = ", ".join(script_paths) if script_paths else "无脚本"
+            log.info("应用启动成功: %s (%s)", app.identifier, label)
             QTimer.singleShot(0, lambda: ToastWidget.show_success(
                 self, f"已启动 {app.identifier} ({label})"
             ))
@@ -387,6 +468,8 @@ class FridaManagerWindow(QMainWindow):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _do_restart(self, app: AppInfo) -> None:
+        log.info("重启应用请求: %s (PID=%d)", app.identifier, app.pid)
+
         def _worker() -> None:
             from .frida_ops import kill_app
 

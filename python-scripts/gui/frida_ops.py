@@ -3,6 +3,8 @@
 import subprocess
 from dataclasses import dataclass
 
+from library.log import log
+
 
 @dataclass
 class AppInfo:
@@ -13,26 +15,20 @@ class AppInfo:
 
 
 def _run_frida_cmd(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
-    """Run a frida CLI command with standard safety settings."""
-    return subprocess.run(
+    log.debug("执行命令: %s", " ".join(args))
+    result = subprocess.run(
         args,
         capture_output=True,
         text=True,
         timeout=timeout,
     )
+    if result.returncode != 0:
+        log.warning("命令失败 (exit %d): %s\nstderr: %s", result.returncode, " ".join(args), result.stderr.strip())
+    return result
 
 
 def get_running_apps(host_port: int) -> list[AppInfo]:
-    """List running processes via ``frida-ps -H``.
-
-    Output format::
-
-        PID  Name
-        ----  ----
-        1234  Gmail
-
-    Running apps lack a package identifier, so *identifier* is set to *name*.
-    """
+    log.info("获取运行中应用列表 (host_port=%d)", host_port)
     proc = _run_frida_cmd(["frida-ps", "-H", f"127.0.0.1:{host_port}"])
     apps: list[AppInfo] = []
     for line in proc.stdout.splitlines():
@@ -52,19 +48,12 @@ def get_running_apps(host_port: int) -> list[AppInfo]:
             continue
         name = parts[1].strip()
         apps.append(AppInfo(pid=pid, name=name, identifier=name, is_running=True))
+    log.info("运行中应用数量: %d", len(apps))
     return apps
 
 
 def get_installed_apps(host_port: int) -> list[AppInfo]:
-    """List installed applications via ``frida-ps -H … -ai``.
-
-    Output format::
-
-        PID  Name             Identifier
-        ----  ---------------  -----------------------
-        1234  Gmail            com.google.android.gm
-         -    Calculator       com.android.calculator2
-    """
+    log.info("获取已安装应用列表 (host_port=%d)", host_port)
     proc = _run_frida_cmd(["frida-ps", "-H", f"127.0.0.1:{host_port}", "-ai"])
     apps: list[AppInfo] = []
     for line in proc.stdout.splitlines():
@@ -89,15 +78,11 @@ def get_installed_apps(host_port: int) -> list[AppInfo]:
         identifier = parts[-1]
         name = " ".join(parts[1:-1])
         apps.append(AppInfo(pid=pid, name=name, identifier=identifier, is_running=is_running))
+    log.info("已安装应用数量: %d", len(apps))
     return apps
 
 
 def get_all_apps(host_port: int) -> list[AppInfo]:
-    """Return installed + running apps, deduplicated by *identifier*.
-
-    Running apps appear first, then non-running.  Within each group apps are
-    sorted alphabetically by name.
-    """
     installed = get_installed_apps(host_port)
     running = get_running_apps(host_port)
 
@@ -127,16 +112,22 @@ def get_all_apps(host_port: int) -> list[AppInfo]:
             seen_identifiers.add(app.identifier)
 
     merged.sort(key=lambda a: (not a.is_running, -(a.pid or 0), a.name.lower()))
+    log.info("合并后应用总数: %d (运行中: %d, 未运行: %d)",
+             len(merged),
+             sum(1 for a in merged if a.is_running),
+             sum(1 for a in merged if not a.is_running))
     return merged
 
 
 def kill_app(host_port: int, pid: int) -> bool:
-    """Kill a process via ``frida-kill -H … <pid>``.
-
-    Returns ``True`` if the command exited with code 0.
-    """
+    log.info("正在终止进程 PID=%d (host_port=%d)", pid, host_port)
     proc = _run_frida_cmd(["frida-kill", "-H", f"127.0.0.1:{host_port}", str(pid)])
-    return proc.returncode == 0
+    success = proc.returncode == 0
+    if success:
+        log.info("进程 PID=%d 已终止", pid)
+    else:
+        log.error("终止进程 PID=%d 失败", pid)
+    return success
 
 
 def build_spawn_cmd(
@@ -152,7 +143,7 @@ def build_spawn_cmd(
     if script_paths:
         for sp in script_paths:
             cmd.extend(["-l", sp])
-    cmd.append("--no-pause")
+    log.info("构建启动命令: %s (脚本: %s)", package, script_paths or "无")
     return cmd
 
 
@@ -162,7 +153,11 @@ def spawn_app(
     script_paths: list[str] | None = None,
 ) -> tuple[subprocess.Popen | None, str | None]:
     cmd = build_spawn_cmd(host_port, package, script_paths)
+    log.info("启动应用: %s, 命令: %s", package, " ".join(cmd))
     try:
-        return subprocess.Popen(cmd), None
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        log.info("frida 进程已启动, PID=%d, 目标应用=%s", proc.pid, package)
+        return proc, None
     except OSError as exc:
+        log.error("启动 frida 进程失败: %s", exc)
         return None, str(exc)

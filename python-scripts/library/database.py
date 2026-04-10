@@ -19,7 +19,7 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create the frida_device_app_script_bind table and indexes if they don't exist."""
+    log.info("初始化数据库: %s", config.FRIDA_DB_PATH)
     conn = _get_conn()
     try:
         conn.execute("""
@@ -76,11 +76,6 @@ def add_script(
     app_identity: str,
     script_path: str,
 ) -> int | None:
-    """Insert a new script binding.
-
-    Returns the new row id on success, or None if a duplicate already exists
-    (same device_type + app_identity + script_path combination).
-    """
     now_ms = int(time.time() * 1000)
     conn = _get_conn()
     try:
@@ -93,6 +88,7 @@ def add_script(
             (device_type, app_identity, script_path),
         )
         if cursor.fetchone() is not None:
+            log.warning("脚本绑定已存在: app=%s, path=%s", app_identity, script_path)
             return None
 
         cursor = conn.execute(
@@ -104,16 +100,13 @@ def add_script(
             (now_ms, now_ms, device_type, device_id, app_identity, script_path),
         )
         conn.commit()
+        log.info("脚本绑定已添加: id=%d, app=%s, path=%s", cursor.lastrowid, app_identity, script_path)
         return cursor.lastrowid
     finally:
         conn.close()
 
 
 def delete_script(script_id: int) -> bool:
-    """Delete a script binding by its primary key id.
-
-    Returns True if a row was deleted, False otherwise.
-    """
     conn = _get_conn()
     try:
         cursor = conn.execute(
@@ -121,7 +114,12 @@ def delete_script(script_id: int) -> bool:
             (script_id,),
         )
         conn.commit()
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+        if deleted:
+            log.info("脚本绑定已删除: id=%d", script_id)
+        else:
+            log.warning("删除脚本绑定失败: id=%d 不存在", script_id)
+        return deleted
     finally:
         conn.close()
 

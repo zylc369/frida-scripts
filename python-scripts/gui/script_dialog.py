@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from library import database
+from library.log import log
 from .toast import ToastWidget
 
 _DEVICE_TYPE_ANDROID = "android"
@@ -143,6 +144,7 @@ class ScriptBindDialog(QDialog):
         script_id = script_id_item.data(Qt.ItemDataRole.UserRole)
         if script_id is None:
             return
+        log.info("删除脚本绑定: id=%d, app=%s", script_id, self._app_identity)
         database.delete_script(script_id)
         self._refresh_list()
 
@@ -154,9 +156,11 @@ class ScriptBindDialog(QDialog):
             return
 
         if database.check_duplicate(_DEVICE_TYPE_ANDROID, self._app_identity, script_path):
+            log.warning("重复脚本绑定: app=%s, path=%s", self._app_identity, script_path)
             ToastWidget.show_error(self, "该脚本已绑定，不要重复添加")
             return
 
+        log.info("添加脚本绑定: app=%s, path=%s", self._app_identity, script_path)
         database.add_script(
             device_type=_DEVICE_TYPE_ANDROID,
             device_id=self._device_id,
@@ -168,6 +172,7 @@ class ScriptBindDialog(QDialog):
 
     def _refresh_list(self) -> None:
         rows = database.query_scripts(_DEVICE_TYPE_ANDROID, self._app_identity)
+        log.debug("脚本列表刷新: app=%s, 绑定数=%d", self._app_identity, len(rows))
         self._table.setRowCount(len(rows))
 
         for i, row_data in enumerate(rows):
