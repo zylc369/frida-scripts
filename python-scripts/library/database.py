@@ -126,6 +126,24 @@ def delete_script(script_id: int) -> bool:
         conn.close()
 
 
+def count_scripts_by_app(device_type: str) -> dict[str, int]:
+    """Return a mapping of app_identity -> script count for the given device_type."""
+    conn = _get_conn()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT app_identity, COUNT(*) AS cnt
+            FROM frida_device_app_script_bind
+            WHERE device_type = ?
+            GROUP BY app_identity
+            """,
+            (device_type,),
+        )
+        return {row["app_identity"]: row["cnt"] for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
 def check_duplicate(
     device_type: str,
     app_identity: str,

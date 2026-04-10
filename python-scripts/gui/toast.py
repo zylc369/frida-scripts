@@ -5,24 +5,26 @@ from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QGraphicsOpacityEffe
 class ToastWidget(QWidget):
 
     _STYLE_SUCCESS = """
-        ToastWidget {
-            background-color: #4CAF50;
+        QWidget {
+            background-color: #2E7D32;
             border-radius: 6px;
         }
         QLabel {
-            color: white;
-            font-size: 13px;
+            color: #FFFFFF;
+            font-size: 14px;
+            font-weight: bold;
             padding: 10px 20px;
         }
     """
     _STYLE_ERROR = """
-        ToastWidget {
-            background-color: #F44336;
+        QWidget {
+            background-color: #C62828;
             border-radius: 6px;
         }
         QLabel {
-            color: white;
-            font-size: 13px;
+            color: #FFFFFF;
+            font-size: 14px;
+            font-weight: bold;
             padding: 10px 20px;
         }
     """
