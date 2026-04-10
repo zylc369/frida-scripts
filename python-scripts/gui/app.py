@@ -111,18 +111,33 @@ class FridaManagerWindow(QMainWindow):
 
     def _build_search_bar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
-        label = QLabel("搜索:")
-        label.setStyleSheet("font-size: 13px;")
+        label = QLabel("🔍")
+        label.setStyleSheet("font-size: 15px;")
         bar.addWidget(label)
 
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("输入包名或应用名搜索...")
-        self._search_input.setStyleSheet("font-size: 13px;")
+        self._search_input.setStyleSheet(
+            "QLineEdit {"
+            "  font-size: 13px; padding: 6px 10px;"
+            "  border: 1px solid #bbdefb; border-radius: 4px;"
+            "  background: #fafafa;"
+            "}"
+            "QLineEdit:focus { border-color: #42a5f5; background: #fff; }"
+        )
         self._search_input.textChanged.connect(self._on_search_changed)
         bar.addWidget(self._search_input)
 
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.setStyleSheet("font-size: 13px; padding: 4px 12px;")
+        refresh_btn = QPushButton("⟳ 刷新")
+        refresh_btn.setStyleSheet(
+            "QPushButton {"
+            "  color: #1565c0; font-weight: bold; font-size: 13px; padding: 6px 14px;"
+            "  border: 1px solid #90caf9; border-radius: 4px;"
+            "  background: #e3f2fd;"
+            "}"
+            "QPushButton:hover { background: #bbdefb; }"
+            "QPushButton:pressed { background: #90caf9; }"
+        )
         refresh_btn.clicked.connect(self._refresh_apps)
         bar.addWidget(refresh_btn)
 
@@ -201,6 +216,28 @@ class FridaManagerWindow(QMainWindow):
         tree.customContextMenuRequested.connect(self._on_context_menu)
         tree.installEventFilter(self)
         tree.itemSelectionChanged.connect(self._update_spawn_btn_label)
+        tree.setStyleSheet(
+            "QTreeWidget {"
+            "  font-size: 13px;"
+            "  border: 1px solid #e0e0e0;"
+            "  border-radius: 4px;"
+            "}"
+            "QTreeWidget::item { padding: 3px 0; }"
+            "QTreeWidget::item:selected {"
+            "  background: #e3f2fd;"
+            "  color: #0d47a1;"
+            "}"
+            "QTreeWidget::item:hover { background: #f5f5f5; }"
+            "QHeaderView::section {"
+            "  background: #eceff1;"
+            "  color: #37474f;"
+            "  font-size: 14px;"
+            "  font-weight: bold;"
+            "  padding: 6px 8px;"
+            "  border: none;"
+            "  border-bottom: 2px solid #b0bec5;"
+            "}"
+        )
 
         header = tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
