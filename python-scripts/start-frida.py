@@ -260,6 +260,7 @@ class FridaStartupClient:
             #     adb.adb_shell(self._config.serial, f"su -c 'pkill -9 -f {basename}'")
             adb.adb_shell(self._config.serial, f"su -c 'pkill -9 -f {basename}'")
             self._frida_pid = None
+            self._frida_install_path = None
 
         # 2. Remove port forwarding (once only)
         if self._host_port is not None:
