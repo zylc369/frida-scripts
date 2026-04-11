@@ -171,15 +171,25 @@ def run_frida_server_bg(serial: str, frida_path: str, port: int) -> subprocess.P
     """Start frida-server in background via adb shell.
 
     Returns Popen object for lifecycle management.
-    If `su` is available on the device, prefixes the command with `su`
-    so frida-server runs as root.
-    Command: adb -s <serial> shell [su] <frida_path> -l 0.0.0.0:<port>
+    Checks if adb shell already has root privileges (uid 0).
+    If already root, runs frida-server directly.
+    If not root and `su` is available, prefixes the command with `su -c`.
+    Command: adb -s <serial> shell <frida_path> -l 0.0.0.0:<port>
     """
-    use_su = check_su_available(serial)
-    cmd = f"su -c '{frida_path} -l 0.0.0.0:{port}'" if use_su else f"{frida_path} -l 0.0.0.0:{port}"
+    result = adb_shell(serial, "id -u")
+    is_root = result.stdout.strip() == "0"
+
+    if is_root:
+        cmd = f"{frida_path} -l 0.0.0.0:{port}"
+    else:
+        use_su = check_su_available(serial)
+        if use_su:
+            cmd = f"su -c '{frida_path} -l 0.0.0.0:{port}'"
+            log.info("设备支持 su，将以 root 权限启动 frida-server")
+        else:
+            cmd = f"{frida_path} -l 0.0.0.0:{port}"
+
     args = _adb_base_args(serial) + ["shell", cmd]
-    if use_su:
-        log.info("设备支持 su，将以 root 权限启动 frida-server")
     log.info("正在启动 frida-server: %s -l 0.0.0.0:%d", frida_path, port)
     return subprocess.Popen(
         args,

@@ -43,7 +43,7 @@ function hookOkhttp3_2() {
 
     // 3. 如果找到了，就可以使用 targetOkHttpClientClass 进行后续的 Hook 操作
     if (targetOkHttpClientClass) {
-        console.log("[*] 成功定位，现在可以开始 Hook 了。");
+        console.log("[*] 成功定位，现在可以开始 Hook 了: " + targetOkHttpClientClass);
         // 例如：Hook newCall 方法
         // targetOkHttpClientClass.newCall.implementation = function(request) { ... }
     } else {
