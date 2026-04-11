@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from .frida_ops import AppInfo
 
 _DEVICE_TYPE_ANDROID = "android"
+_FRIDA_APP_LOG = str(Path("~/bw-frida/frida-target-app.log").expanduser())
 
 
 class RefreshWorker(QThread):
@@ -453,7 +454,7 @@ class FridaManagerWindow(QMainWindow):
 
         bindings = database.query_scripts(_DEVICE_TYPE_ANDROID, app.identifier)
         script_paths = [row["script_path"] for row in bindings] if bindings else None
-        cmd = build_spawn_cmd(self.host_port, app.identifier, script_paths)
+        cmd = build_spawn_cmd(self.host_port, app.identifier, script_paths, _FRIDA_APP_LOG)
         cmd_str = " ".join(cmd)
 
         clipboard = QApplication.clipboard()
@@ -501,7 +502,7 @@ class FridaManagerWindow(QMainWindow):
                      len(bindings) if bindings else 0,
                      script_paths or [])
 
-            proc, err = spawn_app(self.host_port, app.identifier, script_paths)
+            proc, err = spawn_app(self.host_port, app.identifier, script_paths, _FRIDA_APP_LOG)
             if proc is None:
                 msg = f"启动 {app.identifier} 失败"
                 if err:

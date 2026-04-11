@@ -134,6 +134,7 @@ def build_spawn_cmd(
     host_port: int,
     package: str,
     script_paths: list[str] | None = None,
+    output_path: str | None = None,
 ) -> list[str]:
     cmd = [
         "frida",
@@ -143,6 +144,8 @@ def build_spawn_cmd(
     if script_paths:
         for sp in script_paths:
             cmd.extend(["-l", sp])
+    if output_path:
+        cmd.extend(["-o", output_path])
     log.info("构建启动命令: %s (脚本: %s)", package, script_paths or "无")
     return cmd
 
@@ -151,8 +154,9 @@ def spawn_app(
     host_port: int,
     package: str,
     script_paths: list[str] | None = None,
+    output_path: str | None = None,
 ) -> tuple[subprocess.Popen | None, str | None]:
-    cmd = build_spawn_cmd(host_port, package, script_paths)
+    cmd = build_spawn_cmd(host_port, package, script_paths, output_path)
     log.info("启动应用: %s, 命令: %s", package, " ".join(cmd))
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
