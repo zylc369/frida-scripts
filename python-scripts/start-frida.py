@@ -244,6 +244,13 @@ class FridaStartupClient:
         else:
             return
 
+        # 1. Kill remote frida-server and all its child processes on Android
+        if self._config.serial and self._frida_install_path:
+            basename = Path(self._frida_install_path).name
+            log.info("正在终止远程 frida-server 进程: %s", basename)
+            adb.adb_shell(self._config.serial, f"su -c 'pkill -f {basename}'")
+
+        # 2. Remove port forwarding
         log.info(f"要清理端口。serial: {self._config.serial}，host_port={self._host_port}")
         if self._config.serial and self._host_port:
             adb.remove_forward(self._config.serial, self._host_port)
@@ -252,6 +259,8 @@ class FridaStartupClient:
                 hostTcpPort=None,
                 androidTcpPort=None,
             )
+
+        # 3. Kill local adb shell process
         if self._process and self._process.poll() is None:
             self._process.terminate()
             try:

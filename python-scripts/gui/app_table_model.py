@@ -125,7 +125,7 @@ class AppTableModel(QAbstractTableModel):
             ]
         self._display_apps = sorted(
             apps,
-            key=lambda a: (not a.is_running, a.name.lower()),
+            key=lambda a: (not a.is_running, -(a.pid or 0), a.name.lower()),
         )
         self.endResetModel()
 
