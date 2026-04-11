@@ -163,6 +163,10 @@ class ScriptBindDialog(QDialog):
             ToastWidget.show_error(self, "脚本路径不能为空")
             return
 
+        if not Path(script_path).is_file():
+            ToastWidget.show_error(self, f"脚本文件不存在: {script_path}")
+            return
+
         if database.check_duplicate(_DEVICE_TYPE_ANDROID, self._app_identity, script_path):
             log.warning("重复脚本绑定: app=%s, path=%s", self._app_identity, script_path)
             ToastWidget.show_error(self, "该脚本已绑定，不要重复添加")
