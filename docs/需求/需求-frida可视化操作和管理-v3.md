@@ -45,6 +45,7 @@
 ### 添加FridaClient类实例管理器，统一管理所有的实例
 - 创建frida_client_manager.py，里面创建FridaClientManager类，这个类必须是全局单例，线程安全。
 - FridaClientManager可以创建新的FridaClient，可以关闭单个FridaClient，可以关闭所有的FridaClient。
+- FridaClientManager可以根据android device id获取FridaClient，操作某个特定的android设备。
 
 
 ### 进程退出、关闭
@@ -60,3 +61,6 @@
 - 必须有良好的抽象。
 - 必须有良好的复用。
 - 类似逻辑禁止写多遍。
+- 代码做好边界条件检查。
+- 要有良好的日志，帮助排查问题。
+- GUI操作要有良好的提示，帮助用户感知运行结果。
