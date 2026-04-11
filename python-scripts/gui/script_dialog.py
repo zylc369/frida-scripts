@@ -86,6 +86,11 @@ class ScriptBindDialog(QDialog):
         self._table.verticalHeader().setVisible(False)
         self._table.setStyleSheet(self._TABLE_STYLESHEET)
 
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_context_menu)
+        self._table.setMouseTracking(True)
+        self._table.selectionModel().selectionChanged.connect(self._on_selection_changed)
+
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -99,6 +104,8 @@ class ScriptBindDialog(QDialog):
     def _build_delete_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
         self._delete_btn = QPushButton("删除选中")
+        self._delete_btn.setEnabled(False)
+        self._delete_btn.setAutoDefault(False)
         self._delete_btn.setStyleSheet(
             "color: #c62828; font-weight: bold; font-size: 13px; padding: 4px 12px;"
         )
@@ -123,6 +130,7 @@ class ScriptBindDialog(QDialog):
 
         self._add_btn = QPushButton("添加")
         self._add_btn.setEnabled(False)
+        self._add_btn.setAutoDefault(False)
         self._add_btn.setStyleSheet("font-size: 13px; padding: 4px 12px;")
         self._add_btn.clicked.connect(self._on_add)
         row.addWidget(self._add_btn)
@@ -179,6 +187,8 @@ class ScriptBindDialog(QDialog):
             seq = str(i + 1)
             seq_item = QTableWidgetItem(seq)
             seq_item.setData(Qt.ItemDataRole.UserRole, row_data["id"])
+            seq_item.setToolTip(seq)
+            seq_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             create_time_ms = row_data["create_time"]
             create_time_str = datetime.datetime.fromtimestamp(
@@ -190,16 +200,45 @@ class ScriptBindDialog(QDialog):
 
             time_item = QTableWidgetItem(create_time_str)
             time_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            time_item.setToolTip(create_time_str)
 
             name_item = QTableWidgetItem(script_name)
             name_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            name_item.setToolTip(script_name)
 
             path_item = QTableWidgetItem(script_path)
             path_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            path_item.setToolTip(script_path)
 
             self._table.setItem(i, 0, seq_item)
             self._table.setItem(i, 1, time_item)
             self._table.setItem(i, 2, name_item)
             self._table.setItem(i, 3, path_item)
 
-        self._table.setRowCount(len(rows))
+        self._delete_btn.setEnabled(False)
+
+    def _on_selection_changed(self) -> None:
+        self._delete_btn.setEnabled(bool(self._table.selectionModel().selectedRows()))
+
+    def _on_context_menu(self, pos) -> None:
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QMenu
+
+        item = self._table.itemAt(pos)
+        if item is None:
+            return
+        text = item.text()
+        if not text:
+            return
+        menu = QMenu(self._table)
+        copy_action = QAction(f"复制: {text[:40]}{'…' if len(text) > 40 else ''}", menu)
+        copy_action.triggered.connect(lambda: self._copy_text(text))
+        menu.addAction(copy_action)
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _copy_text(text: str) -> None:
+        from PySide6.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
