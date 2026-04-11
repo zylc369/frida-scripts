@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import random
 import subprocess
 import threading
@@ -104,7 +103,6 @@ class FridaManagerWindow(QMainWindow):
                  device_id, host_port, android_port)
 
         self.setWindowTitle("Frida Manager")
-        self._set_random_icon()
         self.resize(1100, 680)
         self.setMinimumSize(800, 480)
 
@@ -138,12 +136,6 @@ class FridaManagerWindow(QMainWindow):
             "padding: 6px; font-size: 13px;"
         )
         return info
-
-    def _set_random_icon(self) -> None:
-        icon_dir = Path(__file__).resolve().parent.parent / "assets" / "icon"
-        icons = list(icon_dir.glob("*.png")) if icon_dir.is_dir() else []
-        if icons:
-            self.setWindowIcon(QIcon(str(random.choice(icons))))
 
     def _build_toolbar_widget(self) -> QWidget:
         widget = QWidget()
@@ -591,6 +583,13 @@ def launch_gui(
     import sys
 
     app = QApplication.instance() or QApplication(sys.argv)
+
+    icon_dir = Path(__file__).resolve().parent.parent / "assets" / "icon"
+    icons = list(icon_dir.glob("*.png")) if icon_dir.is_dir() else []
+    if icons:
+        if isinstance(app, QApplication):
+            app.setWindowIcon(QIcon(str(random.choice(icons))))
+
     window = FridaManagerWindow(
         device_id=device_id,
         host_port=host_port,
