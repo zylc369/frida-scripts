@@ -13,20 +13,23 @@ from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHeaderView,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
     QPushButton,
-    QTreeWidgetItem,
+    QStackedWidget,
+    QTableView,
+    QStyledItemDelegate,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QTreeWidget,
-    QLabel,
 )
 
 from library import database
 from library.log import log
+from .app_table_model import AppTableModel, AppIdRole
+from .gear_button_delegate import GearButtonDelegate
 from .toast import ToastWidget
 
 if TYPE_CHECKING:
@@ -36,7 +39,7 @@ _DEVICE_TYPE_ANDROID = "android"
 
 
 class RefreshWorker(QThread):
-    finished = Signal(list)
+    finished = Signal(list, dict)
 
     def __init__(self, host_port: int) -> None:
         super().__init__()
@@ -49,7 +52,28 @@ class RefreshWorker(QThread):
             apps = get_all_apps(self.host_port)
         except Exception:
             apps = []
-        self.finished.emit(apps)
+        script_counts = database.count_scripts_by_app(_DEVICE_TYPE_ANDROID)
+        self.finished.emit(apps, script_counts)
+
+
+class _InitWorker(QThread):
+    finished = Signal(list, dict)
+
+    def __init__(self, host_port: int) -> None:
+        super().__init__()
+        self.host_port = host_port
+
+    def run(self) -> None:
+        from .frida_ops import get_all_apps
+
+        database.init_db()
+
+        try:
+            apps = get_all_apps(self.host_port)
+        except Exception:
+            apps = []
+        script_counts = database.count_scripts_by_app(_DEVICE_TYPE_ANDROID)
+        self.finished.emit(apps, script_counts)
 
 
 class FridaManagerWindow(QMainWindow):
@@ -69,9 +93,7 @@ class FridaManagerWindow(QMainWindow):
         self._all_apps: list[AppInfo] = []
         self._spawned_processes: list[subprocess.Popen] = []
         self._worker: RefreshWorker | None = None
-        self._last_fingerprint = ""
-
-        database.init_db()
+        self._db_ready = False
 
         log.info("GUI 初始化: device_id=%s, host_port=%d, android_port=%d",
                  device_id, host_port, android_port)
@@ -86,13 +108,13 @@ class FridaManagerWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
 
         layout.addWidget(self._build_info_panel())
-        layout.addLayout(self._build_toolbar())
-        layout.addWidget(self._build_app_list())
+        self._toolbar = self._build_toolbar_widget()
+        layout.addWidget(self._toolbar)
+        layout.addWidget(self._build_app_stack())
 
-        self._refresh_apps()
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._refresh_apps)
-        self._timer.start(5000)
+        self._toolbar.setEnabled(False)
+        self._toolbar.hide()
+        self._start_background_init()
 
     def _build_info_panel(self) -> QLineEdit:
         info = QLineEdit(
@@ -109,8 +131,10 @@ class FridaManagerWindow(QMainWindow):
         )
         return info
 
-    def _build_toolbar(self) -> QHBoxLayout:
-        bar = QHBoxLayout()
+    def _build_toolbar_widget(self) -> QWidget:
+        widget = QWidget()
+        bar = QHBoxLayout(widget)
+        bar.setContentsMargins(0, 0, 0, 0)
 
         search_icon = QLabel("🔍")
         search_icon.setStyleSheet("font-size: 15px;")
@@ -203,32 +227,76 @@ class FridaManagerWindow(QMainWindow):
 
         bar.addWidget(spawn_widget)
         bar.addStretch()
-        return bar
+        return widget
 
-    def _build_app_list(self) -> QTreeWidget:
-        tree = QTreeWidget()
-        tree.setHeaderLabels(["#", "状态", "PID", "应用名", "包名", "脚本", "操作"])
-        tree.setAlternatingRowColors(True)
-        tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        tree.setSortingEnabled(False)
-        tree.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        tree.customContextMenuRequested.connect(self._on_context_menu)
-        tree.installEventFilter(self)
-        tree.itemSelectionChanged.connect(self._update_spawn_btn_label)
-        tree.setStyleSheet(
-            "QTreeWidget {"
+    def _build_app_stack(self) -> QStackedWidget:
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_loading_page())
+        self._stack.addWidget(self._build_app_table())
+        return self._stack
+
+    def _build_loading_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        loading_label = QLabel("正在加载应用列表，请稍候…")
+        loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_label.setStyleSheet(
+            "color: #546e7a; font-size: 16px; padding: 40px;"
+        )
+        layout.addWidget(loading_label)
+        return page
+
+    def _start_background_init(self) -> None:
+        self._init_worker = _InitWorker(self.host_port)
+        self._init_worker.finished.connect(self._on_init_done)
+        self._init_worker.start()
+
+    def _on_init_done(self, apps: list[AppInfo], script_counts: dict[str, int]) -> None:
+        self._db_ready = True
+        self._all_apps = apps
+        self._stack.setCurrentIndex(1)
+        self._toolbar.setEnabled(True)
+        self._toolbar.show()
+        self._apply_model_update(apps, script_counts)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._refresh_apps)
+        self._timer.start(5000)
+
+    def _build_app_table(self) -> QTableView:
+        self._model = AppTableModel()
+
+        self._gear_delegate = GearButtonDelegate()
+        self._gear_delegate.gear_clicked.connect(self._on_gear_clicked)
+
+        table = QTableView()
+        table.setModel(self._model)
+        table.setItemDelegateForColumn(6, self._gear_delegate)
+        table.setAlternatingRowColors(True)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSortingEnabled(False)
+        table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._on_context_menu)
+        table.installEventFilter(self)
+        table.verticalHeader().setVisible(False)
+        table.setShowGrid(False)
+        table.verticalHeader().setDefaultSectionSize(30)
+        table.setStyleSheet(
+            "QTableView {"
             "  font-size: 13px;"
             "  border: 1px solid #e0e0e0;"
             "  border-radius: 4px;"
             "}"
-            "QTreeWidget::item { padding: 3px 0; }"
-            "QTreeWidget::item:selected {"
+            "QTableView::item { padding: 3px 4px; }"
+            "QTableView::item:selected {"
             "  background: #1565c0;"
             "  color: #ffffff;"
             "}"
-            "QTreeWidget::item:hover { background: #f5f5f5; }"
-            "QTreeWidget::item:selected:hover { background: #1976d2; }"
+            "QTableView::item:hover { background: #f5f5f5; }"
+            "QTableView::item:selected:hover { background: #1976d2; }"
             "QHeaderView::section {"
             "  background: #eceff1;"
             "  color: #37474f;"
@@ -240,7 +308,7 @@ class FridaManagerWindow(QMainWindow):
             "}"
         )
 
-        header = tree.header()
+        header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -251,8 +319,9 @@ class FridaManagerWindow(QMainWindow):
         header.resizeSection(3, 180)
         header.resizeSection(4, 220)
 
-        self._tree = tree
-        return tree
+        self._table = table
+        table.selectionModel().selectionChanged.connect(self._update_spawn_btn_label)
+        return table
 
     def _update_spawn_btn_label(self) -> None:
         app = self._selected_app()
@@ -262,31 +331,31 @@ class FridaManagerWindow(QMainWindow):
             self._spawn_btn.setText("启动选中应用")
 
     def eventFilter(self, obj, event):
-        if hasattr(self, "_tree") and obj is self._tree and event.type() == QEvent.Type.KeyPress:
+        if hasattr(self, "_table") and obj is self._table and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if self._tree.hasFocus():
+                if self._table.hasFocus():
                     self._on_spawn_btn_clicked()
                     return True
         return super().eventFilter(obj, event)
 
     def _on_context_menu(self, pos) -> None:
-        item = self._tree.itemAt(pos)
-        if item is None:
+        index = self._table.indexAt(pos)
+        if not index.isValid():
             return
 
-        col = self._tree.columnAt(pos.x())
+        col = index.column()
         if col not in (2, 3, 4, 5):
             return
 
-        text = item.text(col)
+        text = index.data(Qt.ItemDataRole.DisplayRole)
         if not text or text == "-":
             return
 
-        menu = QMenu(self._tree)
+        menu = QMenu(self._table)
         copy_action = QAction(f"复制: {text[:40]}{'…' if len(text) > 40 else ''}", menu)
         copy_action.triggered.connect(lambda: self._copy_text(text))
         menu.addAction(copy_action)
-        menu.exec(self._tree.viewport().mapToGlobal(pos))
+        menu.exec(self._table.viewport().mapToGlobal(pos))
 
     @staticmethod
     def _copy_text(text: str) -> None:
@@ -300,86 +369,37 @@ class FridaManagerWindow(QMainWindow):
         log.info("打开脚本配置对话框: %s (%s)", app_name, app_identifier)
         dlg = ScriptBindDialog(self, self.device_id, app_identifier, app_name)
         dlg.exec()
+        self._refresh_apps()
+
+    def _on_gear_clicked(self, index) -> None:
+        identifier = index.data(AppIdRole) or ""
+        app = next(
+            (a for a in self._all_apps if a.identifier == identifier), None
+        )
+        name = app.name if app else ""
+        self._open_script_dialog(identifier, name)
 
     def _on_search_changed(self) -> None:
-        self._render_apps(force=True)
+        self._model.set_search(self._search_input.text())
 
-    def _render_apps(self, force: bool = False) -> None:
-        search = (
-            self._search_input.text().lower()
-            if hasattr(self, "_search_input")
-            else ""
-        )
-
-        filtered = self._all_apps
-        if search:
-            filtered = [
-                app
-                for app in self._all_apps
-                if search in app.name.lower() or search in app.identifier.lower()
-            ]
-
-        running = [a for a in filtered if a.is_running]
-        stopped = [a for a in filtered if not a.is_running]
-        ordered = running + stopped
-
-        fingerprint = ",".join(
-            f"{a.is_running}:{a.pid}:{a.name}:{a.identifier}" for a in ordered
-        )
-        if not force and fingerprint == self._last_fingerprint:
-            return
-        self._last_fingerprint = fingerprint
-
-        script_counts = database.count_scripts_by_app(_DEVICE_TYPE_ANDROID)
-
+    def _apply_model_update(self, apps: list[AppInfo], script_counts: dict[str, int]) -> None:
         prev_id = ""
-        selected = self._tree.selectedItems()
-        if selected:
-            prev_id = selected[0].data(0, Qt.ItemDataRole.UserRole) or ""
+        rows = self._table.selectionModel().selectedRows()
+        if rows:
+            prev_id = rows[0].data(AppIdRole) or ""
 
-        vscroll = self._tree.verticalScrollBar()
-        scroll_pos = vscroll.value()
+        scroll_pos = self._table.verticalScrollBar().value()
 
-        self._tree.clear()
+        self._model.set_data(apps, script_counts)
 
-        for idx, app in enumerate(ordered):
-            status = "运行中" if app.is_running else "未运行"
-            pid = str(app.pid) if app.is_running else "-"
-            script_count = script_counts.get(app.identifier, 0)
-            script_text = str(script_count) if script_count > 0 else "-"
-            item = QTreeWidgetItem(
-                [str(idx + 1), status, pid, app.name, app.identifier, script_text, ""]
-            )
-            item.setData(0, Qt.ItemDataRole.UserRole, app.identifier)
+        if prev_id:
+            for row in range(self._model.rowCount()):
+                index = self._model.index(row, 0)
+                if index.data(AppIdRole) == prev_id:
+                    self._table.selectRow(row)
+                    break
 
-            if app.is_running:
-                item.setForeground(1, Qt.GlobalColor.darkGreen)
-            else:
-                item.setForeground(1, Qt.GlobalColor.gray)
-                item.setForeground(2, Qt.GlobalColor.gray)
-
-            if script_count > 0:
-                item.setForeground(5, Qt.GlobalColor.darkGreen)
-            else:
-                item.setForeground(5, Qt.GlobalColor.gray)
-
-            self._tree.addTopLevelItem(item)
-
-            btn = QPushButton("⚙")
-            btn.setFixedSize(28, 24)
-            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            btn.setToolTip("配置脚本")
-            identifier = app.identifier
-            name = app.name
-            btn.clicked.connect(
-                lambda checked=False, _id=identifier, _n=name: self._open_script_dialog(_id, _n)
-            )
-            self._tree.setItemWidget(item, 6, btn)
-
-            if app.identifier == prev_id:
-                self._tree.setCurrentItem(item)
-
-        vscroll.setValue(scroll_pos)
+        self._table.verticalScrollBar().setValue(scroll_pos)
 
     def _refresh_apps(self) -> None:
         if self._worker is not None and self._worker.isRunning():
@@ -388,17 +408,17 @@ class FridaManagerWindow(QMainWindow):
         self._worker.finished.connect(self._update_apps)
         self._worker.start()
 
-    def _update_apps(self, apps: list[AppInfo]) -> None:
+    def _update_apps(self, apps: list[AppInfo], script_counts: dict[str, int]) -> None:
         running_count = sum(1 for a in apps if a.is_running)
         log.debug("应用列表更新: 总计 %d 个应用, %d 个运行中", len(apps), running_count)
         self._all_apps = apps
-        self._render_apps()
+        self._apply_model_update(apps, script_counts)
 
     def _selected_app(self) -> AppInfo | None:
-        selected = self._tree.selectedItems()
-        if not selected:
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
             return None
-        identifier = selected[0].data(0, Qt.ItemDataRole.UserRole) or ""
+        identifier = rows[0].data(AppIdRole) or ""
         return next(
             (a for a in self._all_apps if a.identifier == identifier), None
         )
