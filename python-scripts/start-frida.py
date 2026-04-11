@@ -32,7 +32,6 @@ class FridaStartupClient:
         self._android_port: int | None = None
         self._frida_install_path: str | None = None
         self._process: subprocess.Popen | None = None
-        self._cleanup_registered: bool = False
 
     def start(self) -> None:
         log.info("===== 开始启动 frida-server =====")
@@ -40,13 +39,14 @@ class FridaStartupClient:
         if source_path is not None:
             self._install_to_device(source_path)
         self._run_server()
-        self._register_cleanup()
+        atexit.register(self._cleanup)
         log.info("===== frida-server 启动完成 =====")
         log.info("连接信息: 127.0.0.1:%d", self._host_port)
 
         if self._config.gui:
             self._launch_gui()
         else:
+            self._register_signal_handlers()
             log.info("按 Ctrl+C 停止 frida-server")
             self._wait()
 
@@ -225,48 +225,42 @@ class FridaStartupClient:
         self._process = frida_process
 
     # --- cleanup ---
-    def _register_cleanup(self) -> None:
-        if not self._cleanup_registered:
-            atexit.register(self._cleanup)
+    def _register_signal_handlers(self) -> None:
+        def signal_handler(signum, frame):
+            log.info("收到终止信号，正在清理...")
+            sys.exit(0)
 
-            def signal_handler(signum, frame):
-                log.info("收到终止信号，正在清理...")
-                self._cleanup()
-                sys.exit(0)
-
-            signal.signal(signal.SIGINT, signal_handler)
-            signal.signal(signal.SIGTERM, signal_handler)
-            self._cleanup_registered = True
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
     def _cleanup(self) -> None:
-        if self._cleanup_registered:
-            self._cleanup_registered = False
-        else:
-            return
-
         # 1. Kill remote frida-server and all its child processes on Android
         if self._config.serial and self._frida_install_path:
             basename = Path(self._frida_install_path).name
             log.info("正在终止远程 frida-server 进程: %s", basename)
-            adb.adb_shell(self._config.serial, f"su -c 'pkill -f {basename}'")
+            adb.adb_shell(self._config.serial, f"su -c 'pkill -9 -f {basename}'")
 
-        # 2. Remove port forwarding
-        log.info(f"要清理端口。serial: {self._config.serial}，host_port={self._host_port}")
-        if self._config.serial and self._host_port:
-            adb.remove_forward(self._config.serial, self._host_port)
+        # 2. Remove port forwarding (once only)
+        if self._host_port is not None:
+            log.info("要清理端口。serial: %s，host_port=%d", self._config.serial, self._host_port)
+            if self._config.serial:
+                adb.remove_forward(self._config.serial, self._host_port)
             install_record.update_device_record(
                 self._config.serial,
                 hostTcpPort=None,
                 androidTcpPort=None,
             )
+            self._host_port = None
 
-        # 3. Kill local adb shell process
-        if self._process and self._process.poll() is None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
+        # 3. Kill local adb shell process (once only)
+        if self._process is not None:
+            if self._process.poll() is None:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+            self._process = None
 
     def _launch_gui(self) -> None:
         from gui.app import launch_gui
@@ -281,6 +275,7 @@ class FridaStartupClient:
             android_port=self._android_port,
             frida_server_path=self._frida_install_path or "unknown",
         )
+        self._cleanup()
 
     def _wait(self) -> None:
         assert self._process is not None
