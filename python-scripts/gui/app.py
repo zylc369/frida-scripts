@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import random
 import subprocess
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QEvent, QTimer, Qt, QThread, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -84,12 +87,14 @@ class FridaManagerWindow(QMainWindow):
         host_port: int,
         android_port: int,
         frida_server_path: str,
+        frida_pid: int | None = None,
     ) -> None:
         super().__init__()
         self.device_id = device_id
         self.host_port = host_port
         self.android_port = android_port
         self.frida_server_path = frida_server_path
+        self.frida_pid = frida_pid
         self._all_apps: list[AppInfo] = []
         self._spawned_processes: list[subprocess.Popen] = []
         self._worker: RefreshWorker | None = None
@@ -99,6 +104,7 @@ class FridaManagerWindow(QMainWindow):
                  device_id, host_port, android_port)
 
         self.setWindowTitle("Frida Manager")
+        self._set_random_icon()
         self.resize(1100, 680)
         self.setMinimumSize(800, 480)
 
@@ -117,19 +123,27 @@ class FridaManagerWindow(QMainWindow):
         self._start_background_init()
 
     def _build_info_panel(self) -> QLineEdit:
+        pid_text = str(self.frida_pid) if self.frida_pid else "未知"
         info = QLineEdit(
             f"设备ID: {self.device_id}    "
             f"Android端口: {self.android_port}    "
             f"主机端口: {self.host_port}    "
+            f"Frida PID: {pid_text}    "
             f"Frida路径: {self.frida_server_path}",
         )
         info.setReadOnly(True)
-        info.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        info.setSelection(0, 0)
         info.setStyleSheet(
             "background: #e3f2fd; color: #1a237e; border: none; "
             "padding: 6px; font-size: 13px;"
         )
         return info
+
+    def _set_random_icon(self) -> None:
+        icon_dir = Path(__file__).resolve().parent.parent / "assets" / "icon"
+        icons = list(icon_dir.glob("*.png")) if icon_dir.is_dir() else []
+        if icons:
+            self.setWindowIcon(QIcon(str(random.choice(icons))))
 
     def _build_toolbar_widget(self) -> QWidget:
         widget = QWidget()
@@ -571,6 +585,7 @@ def launch_gui(
     host_port: int,
     android_port: int,
     frida_server_path: str,
+    frida_pid: int | None = None,
 ) -> None:
     from PySide6.QtWidgets import QApplication
     import sys
@@ -581,6 +596,7 @@ def launch_gui(
         host_port=host_port,
         android_port=android_port,
         frida_server_path=frida_server_path,
+        frida_pid=frida_pid,
     )
     window.show()
     app.exec()

@@ -32,6 +32,7 @@ class FridaStartupClient:
         self._android_port: int | None = None
         self._frida_install_path: str | None = None
         self._process: subprocess.Popen | None = None
+        self._frida_pid: int | None = None
 
     def start(self) -> None:
         log.info("===== 开始启动 frida-server =====")
@@ -223,6 +224,20 @@ class FridaStartupClient:
         self._android_port = android_port
         self._frida_install_path = install_path
         self._process = frida_process
+        self._frida_pid = self._query_remote_pid(install_path)
+
+    def _query_remote_pid(self, install_path: str) -> int | None:
+        import time
+        time.sleep(1)
+        basename = Path(install_path).name
+        result = adb.adb_shell(self._config.serial, f"su -c 'pidof {basename}'")
+        pid_str = result.stdout.strip()
+        if pid_str:
+            pid = int(pid_str.split()[0])
+            log.info("frida-server 远程 PID: %d", pid)
+            return pid
+        log.warning("未能获取 frida-server 远程 PID")
+        return None
 
     # --- cleanup ---
     def _register_signal_handlers(self) -> None:
@@ -238,7 +253,13 @@ class FridaStartupClient:
         if self._config.serial and self._frida_install_path:
             basename = Path(self._frida_install_path).name
             log.info("正在终止远程 frida-server 进程: %s", basename)
+            # if self._frida_pid is not None:
+            #     adb.adb_shell(self._config.serial, f"su -c 'kill -9 {self._frida_pid}'")
+            #     adb.adb_shell(self._config.serial, f"su -c 'pkill -9 -P {self._frida_pid}'")
+            # else:
+            #     adb.adb_shell(self._config.serial, f"su -c 'pkill -9 -f {basename}'")
             adb.adb_shell(self._config.serial, f"su -c 'pkill -9 -f {basename}'")
+            self._frida_pid = None
 
         # 2. Remove port forwarding (once only)
         if self._host_port is not None:
@@ -274,6 +295,7 @@ class FridaStartupClient:
             host_port=self._host_port,
             android_port=self._android_port,
             frida_server_path=self._frida_install_path or "unknown",
+            frida_pid=self._frida_pid,
         )
         self._cleanup()
 
