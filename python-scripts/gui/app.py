@@ -544,8 +544,16 @@ class FridaManagerWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._timer.stop()
+        self._stop_workers()
         self._cleanup_spawned()
         super().closeEvent(event)
+
+    def _stop_workers(self) -> None:
+        for worker_attr in ("_worker", "_init_worker"):
+            worker = getattr(self, worker_attr, None)
+            if worker is not None and worker.isRunning():
+                worker.quit()
+                worker.wait(3000)
 
     def _cleanup_spawned(self) -> None:
         for proc in self._spawned_processes:
