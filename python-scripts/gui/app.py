@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import random
 import subprocess
-import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -102,6 +101,124 @@ class _InitWorker(QThread):
             apps = []
         script_counts = database.count_scripts_by_app(_DEVICE_TYPE_ANDROID)
         self.finished.emit(apps, script_counts)
+
+
+class _RestartAdbWorker(QThread):
+    finished = Signal(bool, str)
+
+    def __init__(self, manager: FridaClientManager) -> None:
+        super().__init__()
+        self._manager = manager
+
+    def run(self) -> None:
+        log.info("重启 ADB: 先清理所有设备资源")
+        self._manager.close_all()
+        try:
+            adb.restart_adb_server()
+            self.finished.emit(True, "")
+        except adb.AdbError as e:
+            log.error("重启 ADB Server 失败: %s", e)
+            self.finished.emit(False, e.message)
+
+
+class _StopFridaWorker(QThread):
+    finished = Signal(str)
+
+    def __init__(self, manager: FridaClientManager, device_id: str) -> None:
+        super().__init__()
+        self._manager = manager
+        self._device_id = device_id
+
+    def run(self) -> None:
+        log.info("停止 Frida Server (设备 %s)", self._device_id)
+        self._manager.close_client(self._device_id)
+        self.finished.emit(self._device_id)
+
+
+class _KillAppWorker(QThread):
+    finished = Signal(bool, str, str)
+
+    def __init__(self, client: FridaClient, app_identifier: str, pid: int) -> None:
+        super().__init__()
+        self._client = client
+        self._app_identifier = app_identifier
+        self._pid = pid
+
+    def run(self) -> None:
+        success = self._client.kill_app(self._pid)
+        self.finished.emit(success, self._app_identifier, str(self._pid))
+
+
+class _SpawnAppWorker(QThread):
+    finished = Signal(bool, str, str)
+
+    def __init__(
+        self, client: FridaClient, app_identifier: str, script_paths: list[str] | None
+    ) -> None:
+        super().__init__()
+        self._client = client
+        self._app_identifier = app_identifier
+        self._script_paths = script_paths
+
+    def run(self) -> None:
+        proc, err = self._client.spawn_app(self._app_identifier, self._script_paths)
+        if proc is None:
+            msg = f"启动 {self._app_identifier} 失败"
+            if err:
+                msg += f": {err}"
+            log.error("启动失败: %s", msg)
+            self.finished.emit(False, self._app_identifier, msg)
+            return
+
+        import time
+        time.sleep(1)
+        if proc.poll() is not None:
+            stdout = proc.stdout.read() if proc.stdout else ""
+            stderr = proc.stderr.read() if proc.stderr else ""
+            detail = stderr or stdout or f"exit code {proc.returncode}"
+            log.error("frida 进程异常退出: %s, stderr=%s", detail.strip(), stderr.strip())
+            self.finished.emit(False, self._app_identifier, f"启动 {self._app_identifier} 失败: {detail.strip()}")
+            return
+
+        label = ", ".join(self._script_paths) if self._script_paths else "无脚本"
+        log.info("应用启动成功: %s (%s)", self._app_identifier, label)
+        self.finished.emit(True, self._app_identifier, label)
+
+
+class _RestartAppWorker(QThread):
+    finished = Signal(bool, str, str)
+
+    def __init__(self, client: FridaClient, app_identifier: str, pid: int) -> None:
+        super().__init__()
+        self._client = client
+        self._app_identifier = app_identifier
+        self._pid = pid
+
+    def run(self) -> None:
+        success = self._client.kill_app(self._pid)
+        if not success:
+            self.finished.emit(False, self._app_identifier, f"重启失败: 终止 {self._app_identifier} 失败")
+            return
+        import time
+        time.sleep(1)
+        bindings = database.query_scripts(_DEVICE_TYPE_ANDROID, self._app_identifier)
+        script_paths = [row["script_path"] for row in bindings] if bindings else None
+        proc, err = self._client.spawn_app(self._app_identifier, script_paths)
+        if proc is None:
+            msg = f"重启 {self._app_identifier} 失败"
+            if err:
+                msg += f": {err}"
+            self.finished.emit(False, self._app_identifier, msg)
+            return
+        time.sleep(1)
+        if proc.poll() is not None:
+            stdout = proc.stdout.read() if proc.stdout else ""
+            stderr = proc.stderr.read() if proc.stderr else ""
+            detail = stderr or stdout or f"exit code {proc.returncode}"
+            self.finished.emit(False, self._app_identifier, f"重启 {self._app_identifier} 失败: {detail.strip()}")
+            return
+        label = ", ".join(script_paths) if script_paths else "无脚本"
+        self.finished.emit(True, self._app_identifier, label)
 
 
 class FridaManagerWindow(QMainWindow):
@@ -508,23 +625,24 @@ class FridaManagerWindow(QMainWindow):
 
     def _on_restart_adb_clicked(self) -> None:
         self._restart_adb_btn.setEnabled(False)
-        self._restart_adb_btn.setText("重启中...")
+        self._restart_adb_btn.setText("清理并重启中...")
+        self._restart_adb_worker = _RestartAdbWorker(self._manager)
+        self._restart_adb_worker.finished.connect(self._on_adb_restarted)
+        self._restart_adb_worker.start()
 
-        def _worker() -> None:
-            try:
-                adb.restart_adb_server()
-                QTimer.singleShot(0, lambda: ToastWidget.show_success(self, "ADB Server 已重启"))
-            except adb.AdbError as e:
-                log.error("重启 ADB Server 失败: %s", e)
-                QTimer.singleShot(0, lambda: ToastWidget.show_error(self, f"重启 ADB 失败: {e.message}"))
-            finally:
-                QTimer.singleShot(0, self._on_adb_restarted)
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _on_adb_restarted(self) -> None:
+    def _on_adb_restarted(self, success: bool, error_msg: str) -> None:
         self._restart_adb_btn.setEnabled(True)
         self._restart_adb_btn.setText("↻ 重启ADB")
+        if success:
+            ToastWidget.show_success(self, "ADB Server 已重启，设备资源已清理")
+        else:
+            ToastWidget.show_error(self, f"重启 ADB 失败: {error_msg}")
+        self._current_device_id = None
+        self._all_apps = []
+        self._toolbar_widget.setEnabled(False)
+        self._toolbar_widget.hide()
+        self._start_frida_btn.hide()
+        self._stop_frida_btn.hide()
         self._detect_devices()
 
     def _on_start_frida_clicked(self) -> None:
@@ -538,15 +656,11 @@ class FridaManagerWindow(QMainWindow):
         device_id = self._current_device_id
         if not device_id:
             return
-        log.info("停止 Frida Server (设备 %s)", device_id)
-
-        def _worker() -> None:
-            self._manager.close_client(device_id)
-            QTimer.singleShot(0, lambda: self._on_frida_stopped(device_id))
-
-        threading.Thread(target=_worker, daemon=True).start()
         self._stop_frida_btn.setEnabled(False)
         self._stop_frida_btn.setText("正在停止...")
+        self._stop_frida_worker = _StopFridaWorker(self._manager, device_id)
+        self._stop_frida_worker.finished.connect(self._on_frida_stopped)
+        self._stop_frida_worker.start()
 
     def _on_frida_stopped(self, device_id: str) -> None:
         self._update_device_combo_status(device_id)
@@ -652,6 +766,7 @@ class FridaManagerWindow(QMainWindow):
         )
 
         if self._db_ready:
+            self._stack.setCurrentIndex(3)
             self._refresh_apps()
         else:
             self._start_background_init(client)
@@ -842,128 +957,71 @@ class FridaManagerWindow(QMainWindow):
         client = self._get_current_client()
         if client is None:
             return
-
         log.info("Kill 请求: %s (PID=%d, 设备 %s)", app.identifier, app.pid, self._current_device_id)
+        self._kill_worker = _KillAppWorker(client, app.identifier, app.pid)
+        self._kill_worker.finished.connect(self._on_kill_done)
+        self._kill_worker.start()
 
-        def _worker() -> None:
-            success = client.kill_app(app.pid)
-            if success:
-                QTimer.singleShot(
-                    0,
-                    lambda: ToastWidget.show_success(
-                        self, f"已终止 {app.identifier} (PID {app.pid})"
-                    ),
-                )
-            else:
-                QTimer.singleShot(
-                    0,
-                    lambda: ToastWidget.show_error(
-                        self, f"终止 {app.identifier} 失败"
-                    ),
-                )
-            QTimer.singleShot(0, self._refresh_apps)
-
-        threading.Thread(target=_worker, daemon=True).start()
+    def _on_kill_done(self, success: bool, app_identifier: str, pid_str: str) -> None:
+        if success:
+            ToastWidget.show_success(self, f"已终止 {app_identifier} (PID {pid_str})")
+        else:
+            ToastWidget.show_error(self, f"终止 {app_identifier} 失败")
+        self._refresh_apps()
 
     def _do_spawn(self, app: AppInfo) -> None:
         client = self._get_current_client()
         if client is None:
             ToastWidget.show_error(self, "Frida Server 未运行")
             return
-
         log.info(
             "启动应用请求 (设备 %s): %s (当前状态: %s)",
             self._current_device_id,
             app.identifier,
             f"运行中 PID={app.pid}" if app.is_running else "未运行",
         )
+        bindings = database.query_scripts(_DEVICE_TYPE_ANDROID, app.identifier)
+        script_paths: list[str] | None = (
+            [row["script_path"] for row in bindings] if bindings else None
+        )
+        log.info(
+            "启动应用 %s (设备 %s), 绑定脚本数: %d, 脚本列表: %s",
+            app.identifier,
+            self._current_device_id,
+            len(bindings) if bindings else 0,
+            script_paths or [],
+        )
+        self._spawn_worker = _SpawnAppWorker(client, app.identifier, script_paths)
+        self._spawn_worker.finished.connect(self._on_spawn_done)
+        self._spawn_worker.start()
 
-        def _worker() -> None:
-            bindings = database.query_scripts(_DEVICE_TYPE_ANDROID, app.identifier)
-            script_paths: list[str] | None = (
-                [row["script_path"] for row in bindings] if bindings else None
-            )
-
-            log.info(
-                "启动应用 %s (设备 %s), 绑定脚本数: %d, 脚本列表: %s",
-                app.identifier,
-                self._current_device_id,
-                len(bindings) if bindings else 0,
-                script_paths or [],
-            )
-
-            proc, err = client.spawn_app(app.identifier, script_paths)
-            if proc is None:
-                msg = f"启动 {app.identifier} 失败"
-                if err:
-                    msg += f": {err}"
-                log.error("启动失败: %s", msg)
-                QTimer.singleShot(0, lambda: ToastWidget.show_error(self, msg))
-                return
-
-            import time
-
-            time.sleep(1)
-            if proc.poll() is not None:
-                stdout = proc.stdout.read() if proc.stdout else ""
-                stderr = proc.stderr.read() if proc.stderr else ""
-                detail = stderr or stdout or f"exit code {proc.returncode}"
-                log.error(
-                    "frida 进程异常退出: %s, stderr=%s",
-                    detail.strip(),
-                    stderr.strip(),
-                )
-                QTimer.singleShot(
-                    0,
-                    lambda: ToastWidget.show_error(
-                        self,
-                        f"启动 {app.identifier} 失败: {detail.strip()}",
-                    ),
-                )
-                return
-
-            label = ", ".join(script_paths) if script_paths else "无脚本"
-            log.info(
-                "应用启动成功 (设备 %s): %s (%s)",
-                self._current_device_id,
-                app.identifier,
-                label,
-            )
-            QTimer.singleShot(
-                0,
-                lambda: ToastWidget.show_success(
-                    self, f"已启动 {app.identifier} ({label})"
-                ),
-            )
+    def _on_spawn_done(self, success: bool, app_identifier: str, detail: str) -> None:
+        if success:
+            ToastWidget.show_success(self, f"已启动 {app_identifier} ({detail})")
             QTimer.singleShot(2000, self._refresh_apps)
-
-        threading.Thread(target=_worker, daemon=True).start()
+        else:
+            ToastWidget.show_error(self, detail)
 
     def _do_restart(self, app: AppInfo) -> None:
         client = self._get_current_client()
         if client is None:
             return
-
         log.info(
             "重启应用请求 (设备 %s): %s (PID=%d)",
             self._current_device_id,
             app.identifier,
             app.pid,
         )
+        self._restart_worker = _RestartAppWorker(client, app.identifier, app.pid)
+        self._restart_worker.finished.connect(self._on_restart_done)
+        self._restart_worker.start()
 
-        def _worker() -> None:
-            success = client.kill_app(app.pid)
-            if not success:
-                QTimer.singleShot(
-                    0,
-                    lambda: ToastWidget.show_error(
-                        self, f"重启失败: 终止 {app.identifier} 失败"
-                    ),
-                )
-                return
-            QTimer.singleShot(1000, lambda: self._do_spawn(app))
-
-        threading.Thread(target=_worker, daemon=True).start()
+    def _on_restart_done(self, success: bool, app_identifier: str, detail: str) -> None:
+        if success:
+            ToastWidget.show_success(self, f"已重启 {app_identifier} ({detail})")
+            QTimer.singleShot(2000, self._refresh_apps)
+        else:
+            ToastWidget.show_error(self, detail)
 
     def closeEvent(self, event) -> None:
         if self._timer is not None:
@@ -973,7 +1031,11 @@ class FridaManagerWindow(QMainWindow):
         super().closeEvent(event)
 
     def _stop_workers(self) -> None:
-        for attr in ("_worker", "_init_worker", "_start_worker", "_detect_worker"):
+        for attr in (
+            "_worker", "_init_worker", "_start_worker", "_detect_worker",
+            "_restart_adb_worker", "_stop_frida_worker", "_kill_worker",
+            "_spawn_worker", "_restart_worker",
+        ):
             worker = getattr(self, attr, None)
             if worker is not None and hasattr(worker, "isRunning") and worker.isRunning():
                 worker.quit()
