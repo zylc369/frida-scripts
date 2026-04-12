@@ -11,6 +11,28 @@ class AdbError(BwFridaError):
         super().__init__(message, error_code)
 
 
+def restart_adb_server() -> None:
+    """Kill and restart the local ADB server. Raises AdbError on failure."""
+    log.info("正在重启 ADB Server...")
+    kill_result = subprocess.run(
+        ["adb", "kill-server"], capture_output=True, text=True, timeout=10
+    )
+    if kill_result.returncode != 0:
+        msg = f"adb kill-server 失败: {kill_result.stderr.strip()}"
+        log.error(msg)
+        raise AdbError(msg, ErrorCode.ADB_CMD_FAILED)
+
+    start_result = subprocess.run(
+        ["adb", "start-server"], capture_output=True, text=True, timeout=15
+    )
+    if start_result.returncode != 0:
+        msg = f"adb start-server 失败: {start_result.stderr.strip()}"
+        log.error(msg)
+        raise AdbError(msg, ErrorCode.ADB_CMD_FAILED)
+
+    log.info("ADB Server 重启成功")
+
+
 def get_devices() -> list[str]:
     """Run `adb devices`, parse output, return list of serial IDs.
 

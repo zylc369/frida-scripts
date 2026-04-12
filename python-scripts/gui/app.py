@@ -194,6 +194,17 @@ class FridaManagerWindow(QMainWindow):
         self._refresh_devices_btn.clicked.connect(self._detect_devices)
         layout.addWidget(self._refresh_devices_btn)
 
+        self._restart_adb_btn = QPushButton("↻ 重启ADB")
+        self._restart_adb_btn.setStyleSheet(
+            "QPushButton { color: #e65100; font-weight: bold; font-size: 13px; "
+            "padding: 4px 12px; border: 1px solid #ffcc80; border-radius: 4px; "
+            "background: #fff3e0; }"
+            "QPushButton:hover { background: #ffe0b2; }"
+            "QPushButton:pressed { background: #ffcc80; }"
+        )
+        self._restart_adb_btn.clicked.connect(self._on_restart_adb_clicked)
+        layout.addWidget(self._restart_adb_btn)
+
         self._status_label = QLabel("● 未连接")
         self._status_label.setStyleSheet("font-size: 13px; color: #9e9e9e;")
         layout.addWidget(self._status_label)
@@ -494,6 +505,27 @@ class FridaManagerWindow(QMainWindow):
             self._set_ui_state_connected(client)
         else:
             self._set_ui_state_not_started()
+
+    def _on_restart_adb_clicked(self) -> None:
+        self._restart_adb_btn.setEnabled(False)
+        self._restart_adb_btn.setText("重启中...")
+
+        def _worker() -> None:
+            try:
+                adb.restart_adb_server()
+                QTimer.singleShot(0, lambda: ToastWidget.show_success(self, "ADB Server 已重启"))
+            except adb.AdbError as e:
+                log.error("重启 ADB Server 失败: %s", e)
+                QTimer.singleShot(0, lambda: ToastWidget.show_error(self, f"重启 ADB 失败: {e.message}"))
+            finally:
+                QTimer.singleShot(0, self._on_adb_restarted)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_adb_restarted(self) -> None:
+        self._restart_adb_btn.setEnabled(True)
+        self._restart_adb_btn.setText("↻ 重启ADB")
+        self._detect_devices()
 
     def _on_start_frida_clicked(self) -> None:
         device_id = self._current_device_id
