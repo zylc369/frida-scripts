@@ -1,61 +1,37 @@
-function hookOkhttp3() {
-    var OkHttpClient = Java.use("okhttp3.OkHttpClient");
-    OkHttpClient.newCall.overload("okhttp3.Request")
-        .implementation = function (request) {
-        console.log("HTTP Request -> " + request.url().toString());
-        var call = this.newCall(request); // 获取新的 Call 对象
-        var response = call.execute(); // 调用新的 Call 对象的 execute 方法
-        console.log("HTTP Response -> " + response.body().string());
-        return call
-    }
-}
+// 使用 Frida 的 Java 异步 API，避免直接修改方法实现
+function hookOkhttp3_Final() {
+    Java.perform(function() {
+        // 使用 Java.choose 来实时监控已创建的实例
+        var RequestBuilder = Java.use("okhttp3.Request$Builder");
 
-function hookOkhttp3_2() {
-    console.log("[*] 开始寻找混淆后的 OkHttpClient...");
+        // Hook 构造函数而不是方法
+        RequestBuilder.$init.implementation = function() {
+            console.log("[*] Request.Builder created");
+            return this.$init();
+        };
 
-    // 1. 获取应用中所有已加载的类
-    var classes = Java.enumerateLoadedClassesSync();
-    var targetBuilderClass = null;
-    var targetOkHttpClientClass = null;
+        // Hook build 方法
+        RequestBuilder.build.implementation = function() {
+            var request = this.build();
+            var url = request.url().toString();
+            console.log("[Request] Built URL: " + url);
+            return request;
+        };
 
-    // 2. 遍历所有类，寻找符合特征的 Builder 类
-    // 特征：类名包含 "Builder"，并且其外部类（Enclosing Class）的类加载器与它相同
-    for (var i = 0; i < classes.length; i++) {
-        var className = classes[i];
-        if (className.indexOf("Builder") !== -1) {
-            try {
-                var builderClass = Java.use(className);
-                // 尝试获取其外部类，如果能获取到，说明它是一个内部类
-                var enclosingClass = builderClass.class.getEnclosingClass();
-                if (enclosingClass) {
-                    // 这里可以打印出来辅助判断，或者加入更复杂的特征判断
-                    // console.log("找到可能的Builder: " + className + ", 外部类: " + enclosingClass.getName());
-                    targetBuilderClass = builderClass;
-                    targetOkHttpClientClass = Java.use(enclosingClass.getName());
-                    console.log("[+] 找到目标类！Builder: " + className + ", OkHttpClient: " + enclosingClass.getName());
-                    break;
-                }
-            } catch (e) {
-                // 忽略找不到的类
+        // Hook Response 的 body 方法（只打印，不消费）
+        var Response = Java.use("okhttp3.Response");
+        var originalBody = Response.body;
+        Response.body.implementation = function() {
+            var body = originalBody.call(this);
+            if (body != null) {
+                console.log("[Response] Body available");
+                // 注意：不要在这里调用 body.string()，会消费掉 response body
             }
-        }
-    }
+            return body;
+        };
 
-    // 3. 如果找到了，就可以使用 targetOkHttpClientClass 进行后续的 Hook 操作
-    if (targetOkHttpClientClass) {
-        console.log("[*] 成功定位，现在可以开始 Hook 了: " + targetOkHttpClientClass);
-        // 例如：Hook newCall 方法
-        // targetOkHttpClientClass.newCall.implementation = function(request) { ... }
-    } else {
-        console.log("[-] 未找到目标类，请检查应用是否使用了 OkHttp。");
-    }
+        console.log("[+] Final hooks installed");
+    });
 }
 
-function main() {
-    Java.perform(function () {
-        // hookOkhttp3()
-        hookOkhttp3_2()
-    })
-}
-
-setImmediate(main);
+setImmediate(hookOkhttp3_Final);

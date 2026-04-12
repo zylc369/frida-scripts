@@ -183,17 +183,36 @@ class FridaClient:
         self._cleanup_spawned_processes()
 
     def _query_remote_pid(self, install_path: str) -> int | None:
-        time.sleep(1)
         basename = Path(install_path).name
-        result = adb.adb_shell(
-            self.device_id, f"su -c 'pidof {basename}'"
-        )
+        for attempt in range(5):
+            time.sleep(1)
+            pid = self._try_pidof(basename) or self._try_ps_grep(basename)
+            if pid is not None:
+                log.info("frida-server 远程 PID (设备 %s): %d (第 %d 次尝试)", self.device_id, pid, attempt + 1)
+                return pid
+            log.debug("第 %d 次尝试获取 PID 失败 (设备 %s)", attempt + 1, self.device_id)
+        log.warning("未能获取远程 PID (设备 %s)", self.device_id)
+        return None
+
+    def _try_pidof(self, basename: str) -> int | None:
+        result = adb.adb_shell(self.device_id, f"pidof {basename}")
         pid_str = result.stdout.strip()
         if pid_str:
-            pid = int(pid_str.split()[0])
-            log.info("frida-server 远程 PID (设备 %s): %d", self.device_id, pid)
-            return pid
-        log.warning("未能获取远程 PID (设备 %s)", self.device_id)
+            try:
+                return int(pid_str.split()[0])
+            except (ValueError, IndexError):
+                return None
+        return None
+
+    def _try_ps_grep(self, basename: str) -> int | None:
+        result = adb.adb_shell(self.device_id, f"ps -ef | grep {basename} | grep -v grep")
+        for line in result.stdout.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                try:
+                    return int(parts[1])
+                except (ValueError, IndexError):
+                    continue
         return None
 
     def _cleanup_remote_server(self) -> None:
