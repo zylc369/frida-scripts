@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QPersistentMode
 from PySide6.QtGui import QColor
 
 if TYPE_CHECKING:
-    from .frida_ops import AppInfo
+    from .frida_client import AppInfo
 
 COL_INDEX = 0
 COL_STATUS = 1

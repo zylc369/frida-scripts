@@ -1,7 +1,14 @@
 import subprocess
-import sys
 
 from .log import log
+
+
+from .errors import BwFridaError, ErrorCode
+
+
+class AdbError(BwFridaError):
+    def __init__(self, message: str, error_code: ErrorCode) -> None:
+        super().__init__(message, error_code)
 
 
 def get_devices() -> list[str]:
@@ -135,26 +142,28 @@ def check_path_exists(serial: str, path: str) -> bool:
 def mkdir_p(serial: str, path: str) -> None:
     """Run: adb -s <serial> shell mkdir -p <path>
 
-    Raises SystemExit on failure.
+    Raises AdbError on failure.
     """
     result = adb_shell(serial, f"mkdir -p {path}")
     if result.returncode != 0:
-        log.error("创建目录失败 '%s': %s", path, result.stderr)
-        sys.exit(1)
+        msg = f"创建目录失败 '{path}': {result.stderr}"
+        log.error(msg)
+        raise AdbError(msg)
     log.info("目录创建成功: %s", path)
 
 
 def push_file(serial: str, local_path: str, remote_path: str) -> None:
     """Run: adb -s <serial> push <local_path> <remote_path>
 
-    Raises SystemExit on failure.
+    Raises AdbError on failure.
     """
     args = _adb_base_args(serial) + ["push", str(local_path), remote_path]
     log.info("正在推送文件到设备: %s -> %s", local_path, remote_path)
     result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode != 0:
-        log.error("推送文件失败: %s", result.stderr)
-        sys.exit(1)
+        msg = f"推送文件失败: {result.stderr}"
+        log.error(msg)
+        raise AdbError(msg)
     log.info("文件推送成功")
 
 
@@ -201,7 +210,7 @@ def run_frida_server_bg(serial: str, frida_path: str, port: int) -> subprocess.P
 def forward_port(serial: str, host_port: int, android_port: int) -> None:
     """Run: adb -s <serial> forward tcp:<host_port> tcp:<android_port>
 
-    Raises SystemExit on failure.
+    Raises AdbError on failure.
     """
     args = _adb_base_args(serial) + [
         "forward",
@@ -211,8 +220,9 @@ def forward_port(serial: str, host_port: int, android_port: int) -> None:
     log.info("正在设置端口转发: tcp:%d -> tcp:%d", host_port, android_port)
     result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode != 0:
-        log.error("端口转发失败: %s", result.stderr)
-        sys.exit(1)
+        msg = f"端口转发失败: {result.stderr}"
+        log.error(msg)
+        raise AdbError(msg, ErrorCode.PORT_FORWARD_FAILED)
     log.info("端口转发设置成功")
 
 
