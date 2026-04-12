@@ -10,15 +10,16 @@ function tryUse(className) {
 }
 
 function formatHeaders(headers) {
+    if (!headers) return {};
     var result = {};
-    if (headers) {
+    try {
         var names = headers.names();
         var it = names.iterator();
         while (it.hasNext()) {
             var name = it.next();
             result[name] = headers.get(name);
         }
-    }
+    } catch (e) {}
     return result;
 }
 
@@ -26,10 +27,39 @@ function tryGetBodyString(body) {
     if (!body) return null;
     try {
         var bytes = body.bytes();
-        var StringCls = Java.use("java.lang.String");
-        return StringCls.$new(bytes, "UTF-8");
+        return Java.use("java.lang.String").$new(bytes, "UTF-8");
     } catch (e) {
         return "<body read error: " + e.message + ">";
+    }
+}
+
+function hookAllOverloads(cls, methodName, impl) {
+    if (!cls || !cls[methodName]) return;
+    var method = cls[methodName];
+    if (!method || !method.overloads) return;
+
+    var overloads = method.overloads;
+    for (var i = 0; i < overloads.length; i++) {
+        (function (overload) {
+            try {
+                var paramTypes = overload.argumentTypes.map(function (t) { return t.className; });
+                overload.implementation = function () {
+                    return impl.apply(this, [overload, paramTypes, Array.prototype.slice.call(arguments)]);
+                };
+            } catch (e) {
+                console.log("[-] hookAllOverloads(" + methodName + "(" +
+                    overload.argumentTypes.map(function (t) { return t.className; }).join(", ") +
+                    ")) failed: " + e.message);
+            }
+        })(overloads[i]);
+    }
+}
+
+function safeHookAllOverloads(cls, methodName, impl) {
+    try {
+        hookAllOverloads(cls, methodName, impl);
+    } catch (e) {
+        console.log("[-] safeHookAllOverloads(" + methodName + "): " + e.message);
     }
 }
 
@@ -37,157 +67,172 @@ function hookRequestBuilder() {
     var RequestBuilder = tryUse("okhttp3.Request$Builder");
     if (!RequestBuilder) return;
 
-    RequestBuilder.$init.implementation = function () {
-        console.log("[Request.Builder] created");
-        return this.$init();
-    };
+    safeHookAllOverloads(RequestBuilder, "$init", function (original, paramTypes, args) {
+        if (paramTypes.length === 0) {
+            console.log("[Request.Builder] created");
+        } else {
+            console.log("[Request.Builder] created from: " + paramTypes.join(", "));
+        }
+        return original.apply(this, args);
+    });
 
-    RequestBuilder.url.overload("java.lang.String").implementation = function (url) {
-        console.log("[Request.Builder] url: " + url);
-        return this.url(url);
-    };
+    safeHookAllOverloads(RequestBuilder, "url", function (original, paramTypes, args) {
+        console.log("[Request.Builder] url: " + args[0]);
+        return original.apply(this, args);
+    });
 
-    RequestBuilder.method.implementation = function (method, body) {
-        var bodyStr = body ? tryGetBodyString(body) : null;
-        console.log("[Request.Builder] method: " + method +
+    safeHookAllOverloads(RequestBuilder, "method", function (original, paramTypes, args) {
+        var bodyStr = args[1] ? tryGetBodyString(args[1]) : null;
+        console.log("[Request.Builder] method: " + args[0] +
             (bodyStr ? "\n  body: " + bodyStr.substring(0, Math.min(bodyStr.length(), 500)) : ""));
-        return this.method(method, body);
-    };
+        return original.apply(this, args);
+    });
 
-    RequestBuilder.addHeader.implementation = function (name, value) {
-        console.log("[Request.Builder] addHeader: " + name + " = " + value);
-        return this.addHeader(name, value);
-    };
+    safeHookAllOverloads(RequestBuilder, "addHeader", function (original, paramTypes, args) {
+        console.log("[Request.Builder] addHeader: " + args[0] + " = " + args[1]);
+        return original.apply(this, args);
+    });
 
-    RequestBuilder.header.implementation = function (name, value) {
-        console.log("[Request.Builder] header: " + name + " = " + value);
-        return this.header(name, value);
-    };
+    safeHookAllOverloads(RequestBuilder, "header", function (original, paramTypes, args) {
+        console.log("[Request.Builder] header: " + args[0] + " = " + args[1]);
+        return original.apply(this, args);
+    });
 
-    RequestBuilder.removeHeader.implementation = function (name) {
-        console.log("[Request.Builder] removeHeader: " + name);
-        return this.removeHeader(name);
-    };
+    safeHookAllOverloads(RequestBuilder, "removeHeader", function (original, paramTypes, args) {
+        console.log("[Request.Builder] removeHeader: " + args[0]);
+        return original.apply(this, args);
+    });
 
-    RequestBuilder.build.implementation = function () {
-        var request = this.build();
-        var url = request.url().toString();
-        var method = request.method();
-        var headers = formatHeaders(request.headers());
-        console.log("[Request.Builder] build → " + method + " " + url);
-        console.log("  headers: " + JSON.stringify(headers));
+    safeHookAllOverloads(RequestBuilder, "headers", function (original, paramTypes, args) {
+        console.log("[Request.Builder] headers: " + JSON.stringify(formatHeaders(args[0])));
+        return original.apply(this, args);
+    });
+
+    safeHookAllOverloads(RequestBuilder, "build", function (original, paramTypes, args) {
+        var request = original.apply(this, args);
+        try {
+            var url = request.url().toString();
+            var method = request.method();
+            var headers = formatHeaders(request.headers());
+            console.log("[Request.Builder] build -> " + method + " " + url);
+            console.log("  headers: " + JSON.stringify(headers));
+        } catch (e) {
+            console.log("[Request.Builder] build (headers parse error)");
+        }
         return request;
-    };
+    });
 }
 
 function hookResponse() {
     var Response = tryUse("okhttp3.Response");
     if (!Response) return;
 
-    var originalBody = Response.body;
-
-    Response.body.implementation = function () {
-        var body = originalBody.call(this);
+    safeHookAllOverloads(Response, "body", function (original, paramTypes, args) {
+        var body = original.apply(this, args);
         if (body != null) {
-            console.log("[Response] body available for: " + this.request().url().toString());
+            try {
+                console.log("[Response] body available for: " + this.request().url().toString());
+            } catch (e) {
+                console.log("[Response] body available");
+            }
         }
         return body;
-    };
+    });
 
-    Response.code.implementation = function () {
-        var code = this.code();
-        console.log("[Response] code: " + code + " url: " + this.request().url().toString());
+    safeHookAllOverloads(Response, "code", function (original, paramTypes, args) {
+        var code = original.apply(this, args);
+        try {
+            console.log("[Response] code: " + code + " url: " + this.request().url().toString());
+        } catch (e) {
+            console.log("[Response] code: " + code);
+        }
         return code;
-    };
+    });
 
-    Response.headers.implementation = function () {
-        var headers = this.headers();
+    safeHookAllOverloads(Response, "headers", function (original, paramTypes, args) {
+        var headers = original.apply(this, args);
         console.log("[Response] headers: " + JSON.stringify(formatHeaders(headers)));
         return headers;
-    };
+    });
 }
 
 function hookResponseBody() {
     var ResponseBody = tryUse("okhttp3.ResponseBody");
     if (!ResponseBody) return;
 
-    var originalString = ResponseBody.string;
-    ResponseBody.string.implementation = function () {
-        var result = originalString.call(this);
+    safeHookAllOverloads(ResponseBody, "string", function (original, paramTypes, args) {
+        var result = original.apply(this, args);
         var preview = result ? result.substring(0, Math.min(result.length(), 300)) : "";
         console.log("[ResponseBody] string() length=" + (result ? result.length() : 0) +
             "\n  preview: " + preview);
         return result;
-    };
+    });
 
-    var originalBytes = ResponseBody.bytes;
-    ResponseBody.bytes.implementation = function () {
-        var result = originalBytes.call(this);
+    safeHookAllOverloads(ResponseBody, "bytes", function (original, paramTypes, args) {
+        var result = original.apply(this, args);
         console.log("[ResponseBody] bytes() length=" + (result ? result.length : 0));
         return result;
-    };
+    });
 }
 
 function hookOkHttpClientBuilder() {
     var Builder = tryUse("okhttp3.OkHttpClient$Builder");
     if (!Builder) return;
 
-    Builder.addInterceptor.implementation = function (interceptor) {
-        console.log("[OkHttpClient.Builder] addInterceptor: " + interceptor.getClass().getName());
-        return this.addInterceptor(interceptor);
-    };
+    safeHookAllOverloads(Builder, "addInterceptor", function (original, paramTypes, args) {
+        console.log("[OkHttpClient.Builder] addInterceptor: " + args[0].getClass().getName());
+        return original.apply(this, args);
+    });
 
-    Builder.addNetworkInterceptor.implementation = function (interceptor) {
-        console.log("[OkHttpClient.Builder] addNetworkInterceptor: " + interceptor.getClass().getName());
-        return this.addNetworkInterceptor(interceptor);
-    };
+    safeHookAllOverloads(Builder, "addNetworkInterceptor", function (original, paramTypes, args) {
+        console.log("[OkHttpClient.Builder] addNetworkInterceptor: " + args[0].getClass().getName());
+        return original.apply(this, args);
+    });
 
-    Builder.connectTimeout.implementation = function (timeout, unit) {
-        console.log("[OkHttpClient.Builder] connectTimeout: " + timeout + " " + unit);
-        return this.connectTimeout(timeout, unit);
-    };
+    safeHookAllOverloads(Builder, "connectTimeout", function (original, paramTypes, args) {
+        console.log("[OkHttpClient.Builder] connectTimeout: " + Array.prototype.slice.call(args).join(", "));
+        return original.apply(this, args);
+    });
 
-    Builder.readTimeout.implementation = function (timeout, unit) {
-        console.log("[OkHttpClient.Builder] readTimeout: " + timeout + " " + unit);
-        return this.readTimeout(timeout, unit);
-    };
+    safeHookAllOverloads(Builder, "readTimeout", function (original, paramTypes, args) {
+        console.log("[OkHttpClient.Builder] readTimeout: " + Array.prototype.slice.call(args).join(", "));
+        return original.apply(this, args);
+    });
 
-    Builder.writeTimeout.implementation = function (timeout, unit) {
-        console.log("[OkHttpClient.Builder] writeTimeout: " + timeout + " " + unit);
-        return this.writeTimeout(timeout, unit);
-    };
+    safeHookAllOverloads(Builder, "writeTimeout", function (original, paramTypes, args) {
+        console.log("[OkHttpClient.Builder] writeTimeout: " + Array.prototype.slice.call(args).join(", "));
+        return original.apply(this, args);
+    });
 
-    Builder.certificatePinner.implementation = function (pinner) {
-        console.log("[OkHttpClient.Builder] certificatePinner: " + pinner);
-        return this.certificatePinner(pinner);
-    };
+    safeHookAllOverloads(Builder, "certificatePinner", function (original, paramTypes, args) {
+        console.log("[OkHttpClient.Builder] certificatePinner: " + args[0]);
+        return original.apply(this, args);
+    });
 
-    Builder.cookieJar.implementation = function (cookieJar) {
-        console.log("[OkHttpClient.Builder] cookieJar: " + cookieJar.getClass().getName());
-        return this.cookieJar(cookieJar);
-    };
+    safeHookAllOverloads(Builder, "cookieJar", function (original, paramTypes, args) {
+        console.log("[OkHttpClient.Builder] cookieJar: " + args[0].getClass().getName());
+        return original.apply(this, args);
+    });
 
-    Builder.build.implementation = function () {
+    safeHookAllOverloads(Builder, "build", function (original, paramTypes, args) {
         console.log("[OkHttpClient.Builder] build()");
-        return this.build();
-    };
+        return original.apply(this, args);
+    });
 }
 
 function hookCertificatePinner() {
     var CertPinner = tryUse("okhttp3.CertificatePinner");
     if (!CertPinner) return;
 
-    var originalCheck = CertPinner.check.overload("java.lang.String", "java.util.List");
-    originalCheck.implementation = function (hostname, peerCertificates) {
-        console.log("[CertificatePinner] check: hostname=" + hostname +
-            " certs=" + peerCertificates.size());
+    safeHookAllOverloads(CertPinner, "check", function (original, paramTypes, args) {
+        console.log("[CertificatePinner] check(" + paramTypes.join(", ") + "): hostname=" + args[0]);
         try {
-            return originalCheck.call(this, hostname, peerCertificates);
+            return original.apply(this, args);
         } catch (e) {
             console.log("[CertificatePinner] PIN FAILED: " + e.message);
             throw e;
         }
-    };
+    });
 }
 
 function hookRealCall() {
@@ -197,59 +242,48 @@ function hookRealCall() {
     }
     if (!RealCall) return;
 
-    var originalExecute;
-    try {
-        originalExecute = RealCall.execute;
-        RealCall.execute.implementation = function () {
+    safeHookAllOverloads(RealCall, "execute", function (original, paramTypes, args) {
+        try {
             var request = this.request();
             console.log("[RealCall] execute: " + request.method() + " " + request.url().toString());
-            var response = originalExecute.call(this);
+        } catch (e) {
+            console.log("[RealCall] execute");
+        }
+        var response = original.apply(this, args);
+        try {
             console.log("[RealCall] execute response: " + response.code());
-            return response;
-        };
-    } catch (e) {
-        console.log("[-] Could not hook RealCall.execute: " + e.message);
-    }
+        } catch (e) {}
+        return response;
+    });
 
-    var originalEnqueue;
-    try {
-        originalEnqueue = RealCall.enqueue;
-        RealCall.enqueue.implementation = function (callback) {
+    safeHookAllOverloads(RealCall, "enqueue", function (original, paramTypes, args) {
+        try {
             var request = this.request();
             console.log("[RealCall] enqueue: " + request.method() + " " + request.url().toString());
-            return originalEnqueue.call(this, callback);
-        };
-    } catch (e) {
-        console.log("[-] Could not hook RealCall.enqueue: " + e.message);
-    }
+        } catch (e) {
+            console.log("[RealCall] enqueue");
+        }
+        return original.apply(this, args);
+    });
 }
 
 function hookWebSocket() {
     var RealWebSocket = tryUse("okhttp3.internal.ws.RealWebSocket");
     if (!RealWebSocket) return;
 
-    var originalSend = RealWebSocket.send.overload("java.lang.String");
-    originalSend.implementation = function (text) {
-        console.log("[WebSocket] send: " + text);
-        return originalSend.call(this, text);
-    };
-
-    try {
-        var onMessage = RealWebSocket.onMessage;
-        console.log("[+] WebSocket.onMessage found, hooking...");
-    } catch (e) {
-        console.log("[-] WebSocket.onMessage hook skipped (abstract/interface)");
-    }
+    safeHookAllOverloads(RealWebSocket, "send", function (original, paramTypes, args) {
+        console.log("[WebSocket] send: " + args[0]);
+        return original.apply(this, args);
+    });
 }
 
 function hookCookieJar() {
-    var CookieJar = tryUse("okhttp3.CookieJar");
-    if (!CookieJar) return;
-
-    var implementations = Java.enumerateMethods("*CookieJar*");
-    if (implementations && implementations.length > 0) {
-        console.log("[+] CookieJar implementations found: " + JSON.stringify(implementations));
-    }
+    try {
+        var implementations = Java.enumerateMethods("*CookieJar*");
+        if (implementations && implementations.length > 0) {
+            console.log("[+] CookieJar implementations: " + JSON.stringify(implementations));
+        }
+    } catch (e) {}
 }
 
 function hookNativeCrypto() {
@@ -263,60 +297,61 @@ function hookNativeCrypto() {
             baseAddr = Module.findBaseAddress(nativeLibName);
             if (baseAddr) {
                 clearInterval(interval);
-                doHookNative(baseAddr, nativeLibName);
+                doHookNative(nativeLibName);
             }
         }, 1000);
     } else {
-        doHookNative(baseAddr, nativeLibName);
+        doHookNative(nativeLibName);
     }
 }
 
-function doHookNative(baseAddr, libName) {
+function doHookNative(libName) {
+    var baseAddr = Module.findBaseAddress(libName);
     console.log("[+] " + libName + " base: " + baseAddr);
 
     var exports = Module.enumerateExports(libName);
     console.log("[+] Found " + exports.length + " exports in " + libName);
 
     exports.forEach(function (exp) {
-        if (exp.name.indexOf("NativeCrypto") !== -1 || exp.name.indexOf("native") !== -1) {
-            console.log("[+] Export: " + exp.name + " @ " + exp.address);
+        if (exp.name.indexOf("NativeCrypto") === -1 && exp.name.indexOf("native") === -1) return;
+        if (exp.type !== "function") return;
 
-            Interceptor.attach(exp.address, {
-                onEnter: function (args) {
-                    this.args = [];
-                    for (var i = 0; i < args.length; i++) {
-                        this.args.push(args[i]);
-                    }
+        console.log("[+] Export: " + exp.name + " @ " + exp.address);
 
+        Interceptor.attach(exp.address, {
+            onEnter: function (args) {
+                try {
+                    var env = Java.vm.getEnv();
                     if (exp.name.indexOf("encrypt") !== -1) {
-                        var env = Java.vm.getEnv();
-                        var input = env.getStringUtfChars(args[1], null).readUtf8String();
-                        console.log("[Native] encrypt(\"" + input + "\")");
+                        this.fnType = "encrypt";
+                        this.input = env.getStringUtfChars(args[1], null).readUtf8String();
+                        console.log("[Native] encrypt(\"" + this.input + "\")");
                     } else if (exp.name.indexOf("decrypt") !== -1) {
-                        var env = Java.vm.getEnv();
-                        var input = env.getStringUtfChars(args[1], null).readUtf8String();
-                        console.log("[Native] decrypt(\"" + input + "\")");
+                        this.fnType = "decrypt";
+                        this.input = env.getStringUtfChars(args[1], null).readUtf8String();
+                        console.log("[Native] decrypt(\"" + this.input + "\")");
                     } else if (exp.name.indexOf("verifySignature") !== -1) {
-                        var env = Java.vm.getEnv();
-                        var data = env.getStringUtfChars(args[1], null).readUtf8String();
-                        var sig = env.getStringUtfChars(args[2], null).readUtf8String();
-                        console.log("[Native] verifySignature(data=\"" + data + "\", sig=\"" + sig + "\")");
+                        this.fnType = "verifySignature";
+                        this.data = env.getStringUtfChars(args[1], null).readUtf8String();
+                        this.sig = env.getStringUtfChars(args[2], null).readUtf8String();
+                        console.log("[Native] verifySignature(data=\"" + this.data + "\", sig=\"" + this.sig + "\")");
                     } else if (exp.name.indexOf("sign") !== -1) {
-                        var env = Java.vm.getEnv();
-                        var data = env.getStringUtfChars(args[1], null).readUtf8String();
-                        console.log("[Native] sign(\"" + data + "\")");
+                        this.fnType = "sign";
+                        this.data = env.getStringUtfChars(args[1], null).readUtf8String();
+                        console.log("[Native] sign(\"" + this.data + "\")");
                     }
-                },
-                onLeave: function (retval) {
-                    var fnName = exp.name.split("_").pop();
-                    if (exp.name.indexOf("verifySignature") !== -1) {
-                        console.log("[Native] verifySignature → " + (retval.toInt32() ? "true" : "false"));
-                    } else {
-                        console.log("[Native] " + fnName + " → retval=" + retval);
-                    }
+                } catch (e) {
+                    console.log("[Native] onEnter error: " + e.message);
                 }
-            });
-        }
+            },
+            onLeave: function (retval) {
+                if (this.fnType === "verifySignature") {
+                    console.log("[Native] verifySignature -> " + (retval.toInt32() ? "true" : "false"));
+                } else if (this.fnType) {
+                    console.log("[Native] " + this.fnType + " -> retval=" + retval);
+                }
+            }
+        });
     });
 }
 
