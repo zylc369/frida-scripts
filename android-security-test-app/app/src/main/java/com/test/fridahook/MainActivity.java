@@ -2,7 +2,10 @@ package com.test.fridahook;
 
 import android.content.Context;
 import android.os.Bundle;
+import android.view.MenuItem;
+import android.view.View;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.ActionBarDrawerToggle;
 import androidx.appcompat.app.AppCompatActivity;
@@ -10,8 +13,8 @@ import androidx.appcompat.widget.Toolbar;
 import androidx.core.view.GravityCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.navigation.NavController;
+import androidx.navigation.NavDestination;
 import androidx.navigation.fragment.NavHostFragment;
-import androidx.navigation.ui.NavigationUI;
 
 import com.google.android.material.navigation.NavigationView;
 
@@ -43,15 +46,52 @@ public class MainActivity extends AppCompatActivity {
                 .findFragmentById(R.id.nav_host_fragment);
         if (navHostFragment != null) {
             navController = navHostFragment.getNavController();
-            NavigationUI.setupWithNavController(navigationView, navController);
             navController.addOnDestinationChangedListener((controller, destination, arguments) -> {
-                if (drawerLayout.isDrawerOpen(GravityCompat.START)) {
-                    drawerLayout.closeDrawer(GravityCompat.START);
-                }
+                updateCheckedItem(destination);
             });
         }
 
+        navigationView.setNavigationItemSelectedListener(this::onNavigationItemSelected);
         navigationView.setCheckedItem(R.id.networkFragment);
+    }
+
+    private boolean onNavigationItemSelected(@NonNull MenuItem item) {
+        if (navController == null) return false;
+
+        NavDestination current = navController.getCurrentDestination();
+        if (current != null && current.getId() == item.getItemId()) {
+            drawerLayout.closeDrawer(GravityCompat.START);
+            return true;
+        }
+
+        navController.navigate(item.getItemId());
+        drawerLayout.closeDrawer(GravityCompat.START);
+        return true;
+    }
+
+    private void updateCheckedItem(@NonNull NavDestination destination) {
+        int destId = destination.getId();
+        for (int i = 0; i < navigationView.getMenu().size(); i++) {
+            MenuItem item = navigationView.getMenu().getItem(i);
+            if (item.hasSubMenu()) {
+                for (int j = 0; j < item.getSubMenu().size(); j++) {
+                    MenuItem subItem = item.getSubMenu().getItem(j);
+                    if (subItem.getItemId() == destId) {
+                        subItem.setChecked(true);
+                        if (getSupportActionBar() != null) {
+                            getSupportActionBar().setTitle(subItem.getTitle());
+                        }
+                        return;
+                    }
+                }
+            } else if (item.getItemId() == destId) {
+                item.setChecked(true);
+                if (getSupportActionBar() != null) {
+                    getSupportActionBar().setTitle(item.getTitle());
+                }
+                return;
+            }
+        }
     }
 
     @Override
@@ -61,6 +101,9 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public boolean onSupportNavigateUp() {
-        return NavigationUI.navigateUp(navController, drawerLayout);
+        if (navController != null) {
+            return navController.navigateUp();
+        }
+        return super.onSupportNavigateUp();
     }
 }
