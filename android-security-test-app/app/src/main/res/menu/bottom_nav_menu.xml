@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/networkFragment"
+        android:icon="@android:drawable/ic_menu_share"
+        android:title="Network" />
+    <item
+        android:id="@+id/nativeFragment"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:title="Native" />
+    <item
+        android:id="@+id/webSocketFragment"
+        android:icon="@android:drawable/ic_menu_send"
+        android:title="WebSocket" />
+</menu>

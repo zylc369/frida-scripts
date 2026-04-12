@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/networkFragment">
+
+    <fragment
+        android:id="@+id/networkFragment"
+        android:name="com.test.fridahook.ui.NetworkFragment"
+        android:label="Network" />
+
+    <fragment
+        android:id="@+id/nativeFragment"
+        android:name="com.test.fridahook.ui.NativeFragment"
+        android:label="Native" />
+
+    <fragment
+        android:id="@+id/webSocketFragment"
+        android:name="com.test.fridahook.ui.WebSocketFragment"
+        android:label="WebSocket" />
+
+</navigation>
