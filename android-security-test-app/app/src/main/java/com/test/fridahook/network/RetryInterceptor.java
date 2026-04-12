@@ -12,7 +12,6 @@ public class RetryInterceptor implements Interceptor {
 
     private static final String TAG = "RetryInterceptor";
     private final int maxRetry;
-    private int retryCount = 0;
 
     public RetryInterceptor(int maxRetry) {
         this.maxRetry = maxRetry;
@@ -23,6 +22,7 @@ public class RetryInterceptor implements Interceptor {
         Request request = chain.request();
         Response response = null;
         IOException exception = null;
+        int retryCount = 0;
 
         while (retryCount < maxRetry) {
             try {

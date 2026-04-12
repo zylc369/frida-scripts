@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <group android:checkableBehavior="single">
+        <item
+            android:id="@+id/networkFragment"
+            android:icon="@android:drawable/ic_menu_share"
+            android:title="@string/menu_http_test" />
+        <item
+            android:id="@+id/nativeFragment"
+            android:icon="@android:drawable/ic_menu_manage"
+            android:title="@string/menu_native_test" />
+        <item
+            android:id="@+id/webSocketFragment"
+            android:icon="@android:drawable/ic_menu_send"
+            android:title="@string/menu_websocket_test" />
+    </group>
+    <item android:title="">
+        <menu>
+            <item
+                android:id="@+id/settingsFragment"
+                android:icon="@android:drawable/ic_menu_preferences"
+                android:title="@string/menu_settings" />
+        </menu>
+    </item>
+</menu>

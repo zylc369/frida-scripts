@@ -106,13 +106,13 @@ public class NetworkFragment extends Fragment {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
         EditText etKey = new EditText(requireContext());
-        etKey.setHint("Key");
+        etKey.setHint(getString(R.string.hint_header_key));
         etKey.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         etKey.setSingleLine(true);
 
         EditText etValue = new EditText(requireContext());
-        etValue.setHint("Value");
+        etValue.setHint(getString(R.string.hint_header_value));
         etValue.setLayoutParams(new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         etValue.setSingleLine(true);
@@ -159,14 +159,14 @@ public class NetworkFragment extends Fragment {
 
     private void sendRequest() {
         OkHttpHelper.RequestConfig config = buildConfig();
-        addLog("[Request] " + config.method + " " + config.url, LogAdapter.TYPE_REQUEST);
+        addLog(getString(R.string.log_request_prefix) + " " + config.method + " " + config.url, LogAdapter.TYPE_REQUEST);
 
         OkHttpHelper.sendRequest(config, new OkHttpHelper.Callback() {
             @Override
             public void onResponse(String response) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Response]\n" + response, LogAdapter.TYPE_RESPONSE);
+                        addLog(getString(R.string.log_response_prefix) + "\n" + response, LogAdapter.TYPE_RESPONSE);
                     });
                 }
             }
@@ -175,7 +175,7 @@ public class NetworkFragment extends Fragment {
             public void onError(String error) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Error] " + error, LogAdapter.TYPE_ERROR);
+                        addLog(getString(R.string.log_error_prefix) + " " + error, LogAdapter.TYPE_ERROR);
                     });
                 }
             }
@@ -191,14 +191,14 @@ public class NetworkFragment extends Fragment {
         config.method = "POST";
 
         File testFile = OkHttpHelper.createTestUploadFile(requireContext());
-        addLog("[Upload] " + config.url + " file=" + testFile.getName(), LogAdapter.TYPE_REQUEST);
+        addLog(getString(R.string.log_upload_prefix) + " " + config.url + " file=" + testFile.getName(), LogAdapter.TYPE_REQUEST);
 
         OkHttpHelper.uploadFile(config, testFile, new OkHttpHelper.Callback() {
             @Override
             public void onResponse(String response) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Upload Response]\n" + response, LogAdapter.TYPE_RESPONSE);
+                        addLog(getString(R.string.log_upload_response_prefix) + "\n" + response, LogAdapter.TYPE_RESPONSE);
                     });
                 }
             }
@@ -207,7 +207,7 @@ public class NetworkFragment extends Fragment {
             public void onError(String error) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Upload Error] " + error, LogAdapter.TYPE_ERROR);
+                        addLog(getString(R.string.log_upload_error_prefix) + " " + error, LogAdapter.TYPE_ERROR);
                     });
                 }
             }
@@ -221,14 +221,14 @@ public class NetworkFragment extends Fragment {
             etUrl.setText(config.url);
         }
 
-        addLog("[Download] " + config.url, LogAdapter.TYPE_REQUEST);
+        addLog(getString(R.string.log_download_prefix) + " " + config.url, LogAdapter.TYPE_REQUEST);
 
         OkHttpHelper.downloadFile(config, requireContext(), new OkHttpHelper.Callback() {
             @Override
             public void onResponse(String response) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Download Complete] " + response, LogAdapter.TYPE_RESPONSE);
+                        addLog(getString(R.string.log_download_complete_prefix) + " " + response, LogAdapter.TYPE_RESPONSE);
                     });
                 }
             }
@@ -237,7 +237,7 @@ public class NetworkFragment extends Fragment {
             public void onError(String error) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Download Error] " + error, LogAdapter.TYPE_ERROR);
+                        addLog(getString(R.string.log_download_error_prefix) + " " + error, LogAdapter.TYPE_ERROR);
                     });
                 }
             }

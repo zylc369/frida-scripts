@@ -7,16 +7,21 @@
     <fragment
         android:id="@+id/networkFragment"
         android:name="com.test.fridahook.ui.NetworkFragment"
-        android:label="Network" />
+        android:label="@string/menu_http_test" />
 
     <fragment
         android:id="@+id/nativeFragment"
         android:name="com.test.fridahook.ui.NativeFragment"
-        android:label="Native" />
+        android:label="@string/menu_native_test" />
 
     <fragment
         android:id="@+id/webSocketFragment"
         android:name="com.test.fridahook.ui.WebSocketFragment"
-        android:label="WebSocket" />
+        android:label="@string/menu_websocket_test" />
+
+    <fragment
+        android:id="@+id/settingsFragment"
+        android:name="com.test.fridahook.ui.SettingsFragment"
+        android:label="@string/menu_settings" />
 
 </navigation>

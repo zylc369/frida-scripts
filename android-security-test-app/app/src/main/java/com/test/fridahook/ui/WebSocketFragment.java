@@ -67,7 +67,7 @@ public class WebSocketFragment extends Fragment {
             public void onOpen() {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Connected]", LogAdapter.TYPE_RESPONSE);
+                        addLog(getString(R.string.log_connected), LogAdapter.TYPE_RESPONSE);
                         btnConnect.setEnabled(false);
                         btnDisconnect.setEnabled(true);
                     });
@@ -78,7 +78,7 @@ public class WebSocketFragment extends Fragment {
             public void onMessage(String text) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[RX] " + text, LogAdapter.TYPE_RESPONSE);
+                        addLog(getString(R.string.log_rx) + " " + text, LogAdapter.TYPE_RESPONSE);
                     });
                 }
             }
@@ -87,7 +87,7 @@ public class WebSocketFragment extends Fragment {
             public void onClose(int code, String reason) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Closed] code=" + code + " reason=" + reason, LogAdapter.TYPE_ERROR);
+                        addLog(getString(R.string.log_closed) + " code=" + code + " reason=" + reason, LogAdapter.TYPE_ERROR);
                         btnConnect.setEnabled(true);
                         btnDisconnect.setEnabled(false);
                     });
@@ -98,7 +98,7 @@ public class WebSocketFragment extends Fragment {
             public void onError(String error) {
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(() -> {
-                        addLog("[Error] " + error, LogAdapter.TYPE_ERROR);
+                        addLog(getString(R.string.log_error_prefix) + " " + error, LogAdapter.TYPE_ERROR);
                     });
                 }
             }
@@ -107,7 +107,7 @@ public class WebSocketFragment extends Fragment {
         btnConnect.setOnClickListener(v -> {
             String url = etWsUrl.getText().toString().trim();
             if (url.isEmpty()) return;
-            addLog("[Connecting] " + url, LogAdapter.TYPE_REQUEST);
+            addLog(getString(R.string.log_connecting) + " " + url, LogAdapter.TYPE_REQUEST);
             webSocketManager.connect(url);
         });
 
@@ -119,7 +119,7 @@ public class WebSocketFragment extends Fragment {
             String msg = etMessage.getText().toString().trim();
             if (msg.isEmpty()) return;
             webSocketManager.send(msg);
-            addLog("[TX] " + msg, LogAdapter.TYPE_REQUEST);
+            addLog(getString(R.string.log_tx) + " " + msg, LogAdapter.TYPE_REQUEST);
             etMessage.setText("");
         });
     }

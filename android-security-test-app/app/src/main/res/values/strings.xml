@@ -1,4 +1,70 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">FridaHook Test</string>
+    <string name="app_name">Security Test</string>
+
+    <string name="menu_http_test">HTTP Test</string>
+    <string name="menu_native_test">Native Test</string>
+    <string name="menu_websocket_test">WebSocket Test</string>
+    <string name="menu_settings">Settings</string>
+
+    <string name="nav_header_title">Security Test App</string>
+    <string name="nav_header_subtitle">Frida Hook Testing Tool</string>
+
+    <string name="http_request_title">HTTP Request</string>
+    <string name="hint_url">URL</string>
+    <string name="cert_pinning">Certificate Pinning</string>
+    <string name="headers">Headers</string>
+    <string name="add_header">+ Add Header</string>
+    <string name="hint_request_body">Request Body (JSON)</string>
+    <string name="timeout_label">Timeout(s): </string>
+    <string name="retry_label">Retry: </string>
+    <string name="btn_upload">Upload</string>
+    <string name="btn_download">Download</string>
+    <string name="btn_send">Send</string>
+    <string name="response_log">Response Log</string>
+    <string name="hint_header_key">Key</string>
+    <string name="hint_header_value">Value</string>
+
+    <string name="encrypt_decrypt_title">String Encrypt / Decrypt</string>
+    <string name="hint_input_text">Input text</string>
+    <string name="btn_encrypt">Encrypt</string>
+    <string name="btn_decrypt">Decrypt</string>
+    <string name="result_label">Result: </string>
+    <string name="signature_verification_title">Signature Verification</string>
+    <string name="hint_data_to_verify">Data to verify</string>
+    <string name="hint_signature">Signature (leave empty for auto-generate)</string>
+    <string name="btn_verify">Verify Signature</string>
+    <string name="log_label">Log</string>
+    <string name="valid_result">✓ Valid</string>
+    <string name="invalid_result">✗ Invalid</string>
+
+    <string name="websocket_title">WebSocket</string>
+    <string name="hint_ws_url">ws:// or wss:// URL</string>
+    <string name="btn_connect">Connect</string>
+    <string name="btn_disconnect">Disconnect</string>
+    <string name="messages_label">Messages</string>
+    <string name="hint_message">Message</string>
+
+    <string name="language_setting">Language</string>
+    <string name="language_chinese">Chinese</string>
+    <string name="language_english">English</string>
+    <string name="language_follow_system">Follow System</string>
+    <string name="about_setting">About</string>
+    <string name="about_version">Version 1.0.0</string>
+    <string name="about_description">A test application for Frida hook testing, supporting HTTP request interception, Native JNI encryption/decryption, and WebSocket communication testing.</string>
+
+    <string name="log_request_prefix">[Request]</string>
+    <string name="log_response_prefix">[Response]</string>
+    <string name="log_error_prefix">[Error]</string>
+    <string name="log_upload_prefix">[Upload]</string>
+    <string name="log_upload_response_prefix">[Upload Response]</string>
+    <string name="log_upload_error_prefix">[Upload Error]</string>
+    <string name="log_download_prefix">[Download]</string>
+    <string name="log_download_complete_prefix">[Download Complete]</string>
+    <string name="log_download_error_prefix">[Download Error]</string>
+    <string name="log_connected">[Connected]</string>
+    <string name="log_rx">[RX]</string>
+    <string name="log_closed">[Closed]</string>
+    <string name="log_connecting">[Connecting]</string>
+    <string name="log_tx">[TX]</string>
 </resources>

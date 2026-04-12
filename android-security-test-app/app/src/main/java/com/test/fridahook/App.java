@@ -19,6 +19,11 @@ public class App extends Application {
         initOkHttpClient();
     }
 
+    @Override
+    protected void attachBaseContext(Context base) {
+        super.attachBaseContext(LocaleHelper.applyLocale(base));
+    }
+
     private void initOkHttpClient() {
         okHttpClient = new OkHttpClient.Builder()
                 .cookieJar(new CookieJarImpl(this))

@@ -92,7 +92,7 @@ public class NativeFragment extends Fragment {
             String signature = etSignSignature.getText().toString().trim();
             if (data.isEmpty()) return;
             boolean valid = NativeCrypto.verifySignature(data, signature);
-            tvVerifyResult.setText(valid ? "✓ Valid" : "✗ Invalid");
+            tvVerifyResult.setText(valid ? getString(R.string.valid_result) : getString(R.string.invalid_result));
             addLog("verifySignature(\"" + data + "\", \"" + signature + "\") → " + valid,
                     valid ? LogAdapter.TYPE_RESPONSE : LogAdapter.TYPE_ERROR);
         });

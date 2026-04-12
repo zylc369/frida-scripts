@@ -15,9 +15,12 @@
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
-            app:cardCornerRadius="12dp"
-            app:cardElevation="2dp">
+            android:layout_marginBottom="12dp"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/colorCardStroke"
+            app:strokeWidth="1dp"
+            app:cardBackgroundColor="@color/colorSurface">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -28,17 +31,14 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="String Encrypt / Decrypt"
-                    android:textStyle="bold"
-                    android:textSize="16sp"
-                    android:textColor="?attr/colorPrimary"
-                    android:layout_marginBottom="8dp" />
+                    android:text="@string/encrypt_decrypt_title"
+                    style="@style/SectionTitleText" />
 
                 <EditText
                     android:id="@+id/et_encrypt_input"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:hint="Input text"
+                    android:hint="@string/hint_input_text"
                     android:singleLine="true"
                     android:layout_marginBottom="8dp" />
 
@@ -53,7 +53,7 @@
                         android:layout_width="0dp"
                         android:layout_weight="1"
                         android:layout_height="wrap_content"
-                        android:text="Encrypt"
+                        android:text="@string/btn_encrypt"
                         android:layout_marginEnd="4dp" />
 
                     <Button
@@ -62,7 +62,7 @@
                         android:layout_width="0dp"
                         android:layout_weight="1"
                         android:layout_height="wrap_content"
-                        android:text="Decrypt"
+                        android:text="@string/btn_decrypt"
                         android:layout_marginStart="4dp" />
 
                 </LinearLayout>
@@ -71,7 +71,7 @@
                     android:id="@+id/tv_encrypt_result"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Result: "
+                    android:text="@string/result_label"
                     android:fontFamily="monospace"
                     android:textIsSelectable="true"
                     android:background="@drawable/bg_log_container"
@@ -84,9 +84,12 @@
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
-            app:cardCornerRadius="12dp"
-            app:cardElevation="2dp">
+            android:layout_marginBottom="12dp"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/colorCardStroke"
+            app:strokeWidth="1dp"
+            app:cardBackgroundColor="@color/colorSurface">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -97,17 +100,14 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Signature Verification"
-                    android:textStyle="bold"
-                    android:textSize="16sp"
-                    android:textColor="?attr/colorPrimary"
-                    android:layout_marginBottom="8dp" />
+                    android:text="@string/signature_verification_title"
+                    style="@style/SectionTitleText" />
 
                 <EditText
                     android:id="@+id/et_sign_data"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:hint="Data to verify"
+                    android:hint="@string/hint_data_to_verify"
                     android:singleLine="true"
                     android:layout_marginBottom="8dp" />
 
@@ -115,7 +115,7 @@
                     android:id="@+id/et_sign_signature"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:hint="Signature (leave empty for auto-generate)"
+                    android:hint="@string/hint_signature"
                     android:singleLine="true"
                     android:layout_marginBottom="8dp" />
 
@@ -123,14 +123,14 @@
                     android:id="@+id/btn_verify"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Verify Signature"
+                    android:text="@string/btn_verify"
                     android:layout_marginBottom="8dp" />
 
                 <TextView
                     android:id="@+id/tv_verify_result"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Result: "
+                    android:text="@string/result_label"
                     android:fontFamily="monospace"
                     android:textIsSelectable="true"
                     android:background="@drawable/bg_log_container"
@@ -143,10 +143,8 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Log"
-            android:textStyle="bold"
-            android:textSize="14sp"
-            android:layout_marginBottom="4dp" />
+            android:text="@string/log_label"
+            style="@style/LogTitleText" />
 
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rv_native_logs"

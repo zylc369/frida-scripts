@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">安全测试</string>
+
+    <string name="menu_http_test">HTTP 测试</string>
+    <string name="menu_native_test">Native 测试</string>
+    <string name="menu_websocket_test">WebSocket 测试</string>
+    <string name="menu_settings">设置</string>
+
+    <string name="nav_header_title">安全测试工具</string>
+    <string name="nav_header_subtitle">Frida Hook 测试工具</string>
+
+    <string name="http_request_title">HTTP 请求</string>
+    <string name="hint_url">URL 地址</string>
+    <string name="cert_pinning">证书固定</string>
+    <string name="headers">请求头</string>
+    <string name="add_header">+ 添加请求头</string>
+    <string name="hint_request_body">请求体 (JSON)</string>
+    <string name="timeout_label">超时(秒): </string>
+    <string name="retry_label">重试: </string>
+    <string name="btn_upload">上传</string>
+    <string name="btn_download">下载</string>
+    <string name="btn_send">发送</string>
+    <string name="response_log">响应日志</string>
+    <string name="hint_header_key">键</string>
+    <string name="hint_header_value">值</string>
+
+    <string name="encrypt_decrypt_title">字符串加密 / 解密</string>
+    <string name="hint_input_text">输入文本</string>
+    <string name="btn_encrypt">加密</string>
+    <string name="btn_decrypt">解密</string>
+    <string name="result_label">结果: </string>
+    <string name="signature_verification_title">签名校验</string>
+    <string name="hint_data_to_verify">待验证数据</string>
+    <string name="hint_signature">签名（留空则自动生成）</string>
+    <string name="btn_verify">验证签名</string>
+    <string name="log_label">日志</string>
+    <string name="valid_result">✓ 有效</string>
+    <string name="invalid_result">✗ 无效</string>
+
+    <string name="websocket_title">WebSocket</string>
+    <string name="hint_ws_url">ws:// 或 wss:// 地址</string>
+    <string name="btn_connect">连接</string>
+    <string name="btn_disconnect">断开</string>
+    <string name="messages_label">消息记录</string>
+    <string name="hint_message">消息内容</string>
+
+    <string name="language_setting">语言</string>
+    <string name="language_chinese">中文</string>
+    <string name="language_english">English</string>
+    <string name="language_follow_system">跟随系统</string>
+    <string name="about_setting">关于</string>
+    <string name="about_version">版本 1.0.0</string>
+    <string name="about_description">用于 Frida Hook 测试的应用，支持 HTTP 请求拦截、Native JNI 加解密、WebSocket 通信等功能测试。</string>
+
+    <string name="log_request_prefix">[请求]</string>
+    <string name="log_response_prefix">[响应]</string>
+    <string name="log_error_prefix">[错误]</string>
+    <string name="log_upload_prefix">[上传]</string>
+    <string name="log_upload_response_prefix">[上传响应]</string>
+    <string name="log_upload_error_prefix">[上传错误]</string>
+    <string name="log_download_prefix">[下载]</string>
+    <string name="log_download_complete_prefix">[下载完成]</string>
+    <string name="log_download_error_prefix">[下载错误]</string>
+    <string name="log_connected">[已连接]</string>
+    <string name="log_rx">[接收]</string>
+    <string name="log_closed">[已关闭]</string>
+    <string name="log_connecting">[连接中]</string>
+    <string name="log_tx">[发送]</string>
+</resources>

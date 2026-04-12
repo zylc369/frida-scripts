@@ -1,11 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="colorPrimary">#1976D2</color>
-    <color name="colorPrimaryDark">#1565C0</color>
-    <color name="colorPrimaryVariant">#0D47A1</color>
+    <color name="colorPrimary">#1565C0</color>
+    <color name="colorPrimaryDark">#0D47A1</color>
+    <color name="colorPrimaryVariant">#1976D2</color>
     <color name="colorAccent">#FF6F00</color>
     <color name="colorOnPrimary">#FFFFFF</color>
     <color name="colorSurface">#FFFFFF</color>
     <color name="colorOnSurface">#212121</color>
-    <color name="colorBackground">#FAFAFA</color>
+    <color name="colorBackground">#F5F5F5</color>
+    <color name="colorSurfaceVariant">#E8EAF6</color>
+    <color name="colorOnSurfaceVariant">#546E7A</color>
+    <color name="colorDrawerHeaderStart">#1565C0</color>
+    <color name="colorDrawerHeaderEnd">#42A5F5</color>
+    <color name="colorLogRequest">#1565C0</color>
+    <color name="colorLogRequestBg">#E3F2FD</color>
+    <color name="colorLogResponse">#2E7D32</color>
+    <color name="colorLogResponseBg">#E8F5E9</color>
+    <color name="colorLogError">#C62828</color>
+    <color name="colorLogErrorBg">#FFEBEE</color>
+    <color name="colorDivider">#E0E0E0</color>
+    <color name="colorCardStroke">#E0E0E0</color>
 </resources>
