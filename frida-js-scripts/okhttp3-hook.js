@@ -200,26 +200,28 @@ function hookResponseBodyBytes() {
 // 用于生成唯一的动态注册类名，避免 Java.registerClass 名称冲突
 var cbCounter = 0;
 
-// 请求去重计数器，用于区分同一请求的多次调用（避免 getResponseWithInterceptorChain 和 enqueue callback 双重打印）
-var dedupCounter = 0;
+// 去重条目的过期时间（毫秒），同一请求的两个 Hook 点（getResponseWithInterceptorChain 和 onResponse）
+// 在此时间窗口内共享去重状态，超时后自动过期，允许后续相同请求正常打印
+var DEDUP_TTL = 10000;
 
-/**
- * 请求去重集合：只在同一次请求链内去重
- * 避免 getResponseWithInterceptorChain 和 enqueue callback 的 onResponse 对同一个请求重复打印
- * key 由请求的唯一 ID（在 enqueue 中生成）标识，而非 URL+状态码（同一 URL 可能被多次请求）
- */
+// 请求去重集合：key=Response.hashCode, value=记录时间戳
 var printedRequests = {};
 
 /**
  * 标记一个请求为已打印，返回 true 表示首次标记（应打印），false 表示已打印过（跳过）
+ * 每次调用时顺便清理所有过期条目，避免内存无限增长
  */
 function markPrinted(key) {
+    var now = Date.now();
+    // 惰性淘汰：遍历集合，删除所有已过期条目
+    var keys = Object.keys(printedRequests);
+    for (var i = 0; i < keys.length; i++) {
+        if (now - printedRequests[keys[i]] >= DEDUP_TTL) {
+            delete printedRequests[keys[i]];
+        }
+    }
     if (printedRequests[key]) return false;
-    printedRequests[key] = true;
-    // 10 秒后自动清除，允许后续相同请求正常打印
-    setTimeout(function () {
-        delete printedRequests[key];
-    }, 10000);
+    printedRequests[key] = now;
     return true;
 }
 
