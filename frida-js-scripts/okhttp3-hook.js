@@ -201,14 +201,16 @@ function hookResponseBodyBytes() {
 var cbCounter = 0;
 
 /**
- * Hook OkHttp RealCall —— 拦截同步 execute() 和异步 enqueue() 请求
- * RealCall 是 OkHttp 执行请求的核心类，所有网络请求都通过它发出
+ * Hook OkHttp RealCall —— 拦截所有 HTTP 请求和响应
  *
- * 同步请求(execute)：直接 Hook 返回的 Response，打印请求和响应头
- * 异步请求(enqueue)：用动态注册的回调类包装原始 Callback，在回调中打印信息
- *   - Java.retain() 防止原始回调被 GC 回收导致 "Wrapper is disposed" 错误
- *   - Java.registerClass() 名称必须唯一，使用计数器后缀避免冲突
- *   - 必须遍历所有 overloads 并用 IIFE 捕获循环变量
+ * 采用双管齐下的策略：
+ *   1. Hook getResponseWithInterceptorChain()：拦截所有请求（同步+异步）的核心执行方法
+ *      这是 OkHttp 内部真正发出请求并返回响应的方法，execute() 和 enqueue() 最终都会走到这里
+ *      优点：无需包装 Callback，不用担心 Java.registerClass 兼容性问题
+ *
+ *   2. Hook enqueue(callback)：额外包装异步回调，用于捕获 onFailure 失败场景
+ *      因为 getResponseWithInterceptorChain() 只能捕获成功的请求
+ *      失败时（网络异常等）会在 Callback.onFailure() 中处理，不走 getResponseWithInterceptorChain()
  */
 function hookRealCall() {
     // OkHttp3.x 的 RealCall 在不同版本路径不同，依次尝试
@@ -216,73 +218,115 @@ function hookRealCall() {
     if (!cls) cls = tryUse("okhttp3.RealCall");
     if (!cls) return;
 
-    // Hook 同步执行方法 execute()
-    // execute() 阻塞当前线程直到收到响应，所以可以直接在 Hook 中打印 Response
-    var execOv = cls.execute.overloads;
-    for (var i = 0; i < execOv.length; i++) {
-        (function (overload) {
-            overload.implementation = function () {
-                // 调用原始 execute() 获取 Response，此时请求已实际发出并返回
-                var resp = this.execute();
-                // 通过 resp.request() 拿到关联的 Request 对象，打印完整的请求信息
-                printRequest(resp.request());
-                printResponseHeaders(resp);
-                return resp;
-            };
-        })(execOv[i]);
+    // 打印类中所有方法名，用于排查方法名不存在的问题（如 ProGuard 混淆）
+    try {
+        var methodNames = cls.class.getDeclaredMethods().map(function (m) {
+            return m.getName();
+        });
+        console.log("[*] RealCall methods: " + methodNames.join(", "));
+    } catch (e) {
+        console.log("[-] enumerate methods error: " + e.message);
     }
 
-    // Hook 异步执行方法 enqueue(callback)
-    // enqueue() 不阻塞，响应通过 Callback 回调返回，需要包装原始回调来拦截
-    var enqOv = cls.enqueue.overloads;
-    for (var i = 0; i < enqOv.length; i++) {
-        (function (overload) {
-            overload.implementation = function (callback) {
-                // 【关键】Java.retain() 防止原始 Callback 被 GC 回收
-                // Frida Java Bridge 中的对象在 GC 时会被 dispose，之后调用会报 "Wrapper is disposed"
-                var origCb = Java.retain(callback);
-                // 计数器确保每次注册的类名唯一，Java.registerClass 不允许重名
-                var idx = ++cbCounter;
-                var Callback = Java.use("okhttp3.Callback");
+    // --- 策略1：Hook getResponseWithInterceptorChain() ---
+    // 这是 OkHttp 内部方法，所有请求（无论同步 execute 还是异步 enqueue）最终都通过它执行
+    // 返回 Response 对象，包含完整的请求和响应信息
+    // 优先 Hook 此方法，因为它最简单可靠，不需要处理 Callback 包装
+    // OkHttp4 Kotlin 编译后方法名可能带 $okhttp 后缀，依次尝试
+    var getRespMethod = null;
+    var getRespNames = ["getResponseWithInterceptorChain", "getResponseWithInterceptorChain$okhttp"];
+    for (var gi = 0; gi < getRespNames.length; gi++) {
+        if (cls[getRespNames[gi]]) {
+            getRespMethod = getRespNames[gi];
+            break;
+        }
+    }
 
-                // 动态生成一个实现了 okhttp3.Callback 接口的 Java 类
-                // 在各个回调方法中先打印信息，再调用原始回调，实现透明拦截
-                var Wrapped = Java.registerClass({
-                    name: "com.hook.OkCb" + idx,
-                    implements: [Callback],
-                    methods: {
-                        // 请求成功回调：打印请求和响应头后，转发给原始回调
-                        onResponse: function (call, response) {
-                            try {
-                                printRequest(response.request());
-                                printResponseHeaders(response);
-                            } catch (e) {
-                                console.log("[hook onResponse print error: " + e.message + "]");
-                            }
-                            // 将 Response 原样传递给应用的原始回调，应用逻辑不受影响
-                            origCb.onResponse(call, response);
-                        },
-                        // 请求失败回调：打印失败信息后，转发给原始回调
-                        onFailure: function (call, e) {
-                            try {
-                                var req = call.request();
-                                console.log("");
-                                console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-                                console.log("[Failure] " + req.method() + " " + req.url().toString());
-                                console.log("  Error: " + e.getMessage());
-                                console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-                            } catch (ex) {}
-                            // 将异常原样传递给原始回调
-                            origCb.onFailure(call, e);
-                        }
+    if (getRespMethod) {
+        var getRespOv = cls[getRespMethod].overloads;
+        for (var i = 0; i < getRespOv.length; i++) {
+            (function (overload, methodName) {
+                overload.implementation = function () {
+                    var resp = this[methodName]();
+                    try {
+                        printRequest(resp.request());
+                        printResponseHeaders(resp);
+                    } catch (e) {
+                        console.log("[hook " + methodName + " print error: " + e.message + "]");
                     }
-                });
+                    return resp;
+                };
+            })(getRespOv[i], getRespMethod);
+        }
+        console.log("[+] Hooked " + getRespMethod);
+    } else {
+        // 方法不存在（可能被混淆），降级到 Hook execute()
+        console.log("[-] getResponseWithInterceptorChain not found, falling back to execute()");
+        if (cls.execute) {
+            var execOv = cls.execute.overloads;
+            for (var i = 0; i < execOv.length; i++) {
+                (function (overload) {
+                    overload.implementation = function () {
+                        var resp = this.execute();
+                        try {
+                            printRequest(resp.request());
+                            printResponseHeaders(resp);
+                        } catch (e) {
+                            console.log("[hook execute print error: " + e.message + "]");
+                        }
+                        return resp;
+                    };
+                })(execOv[i]);
+            }
+            console.log("[+] Hooked execute");
+        }
+    }
 
-                // 用包装后的 Callback 实例替代原始 callback 传入 enqueue
-                // OkHttp 内部只看到 Callback 接口，不知道已被替换
-                return this.enqueue(Wrapped.$new());
-            };
-        })(enqOv[i]);
+    // --- 策略2：Hook enqueue(callback) ---
+    // 目的不是为了拦截成功响应（策略1已覆盖），而是为了捕获 onFailure 失败场景
+    // 当网络异常、DNS 失败等导致请求无法完成时，Callback.onFailure() 会被调用
+    if (cls.enqueue) {
+        var enqOv = cls.enqueue.overloads;
+        for (var i = 0; i < enqOv.length; i++) {
+            (function (overload) {
+                overload.implementation = function (callback) {
+                    var origCb = Java.retain(callback);
+                    var idx = ++cbCounter;
+                    var Callback = Java.use("okhttp3.Callback");
+
+                    try {
+                        var Wrapped = Java.registerClass({
+                            name: "com.hook.OkCb" + idx,
+                            implements: [Callback],
+                            methods: {
+                                onResponse: function (call, response) {
+                                    // 成功响应已在策略1 Hook 中打印，此处只转发
+                                    origCb.onResponse(call, response);
+                                },
+                                onFailure: function (call, e) {
+                                    try {
+                                        var req = call.request();
+                                        console.log("");
+                                        console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+                                        console.log("[Failure] " + req.method() + " " + req.url().toString());
+                                        console.log("  Error: " + e.getMessage());
+                                        console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+                                    } catch (ex) {}
+                                    origCb.onFailure(call, e);
+                                }
+                            }
+                        });
+                        return this.enqueue(Wrapped.$new());
+                    } catch (regErr) {
+                        // Java.registerClass 可能因版本兼容性失败（如 Callback 接口签名不匹配）
+                        // 降级处理：直接调用原始 enqueue，不包装回调，仅失去 onFailure 拦截能力
+                        console.log("[-] registerClass failed, fallback to direct enqueue: " + regErr.message);
+                        return this.enqueue(callback);
+                    }
+                };
+            })(enqOv[i]);
+        }
+        console.log("[+] Hooked enqueue");
     }
 }
 
