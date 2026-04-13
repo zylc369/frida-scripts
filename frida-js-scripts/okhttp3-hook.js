@@ -200,47 +200,84 @@ function hookResponseBodyBytes() {
 // 用于生成唯一的动态注册类名，避免 Java.registerClass 名称冲突
 var cbCounter = 0;
 
+// 请求去重计数器，用于区分同一请求的多次调用（避免 getResponseWithInterceptorChain 和 enqueue callback 双重打印）
+var dedupCounter = 0;
+
+/**
+ * 请求去重集合：只在同一次请求链内去重
+ * 避免 getResponseWithInterceptorChain 和 enqueue callback 的 onResponse 对同一个请求重复打印
+ * key 由请求的唯一 ID（在 enqueue 中生成）标识，而非 URL+状态码（同一 URL 可能被多次请求）
+ */
+var printedRequests = {};
+
+/**
+ * 标记一个请求为已打印，返回 true 表示首次标记（应打印），false 表示已打印过（跳过）
+ */
+function markPrinted(key) {
+    if (printedRequests[key]) return false;
+    printedRequests[key] = true;
+    // 10 秒后自动清除，允许后续相同请求正常打印
+    setTimeout(function () {
+        delete printedRequests[key];
+    }, 10000);
+    return true;
+}
+
+/**
+ * 从 Java 类的方法列表中搜索匹配指定关键词的方法名
+ * OkHttp4 Kotlin 编译后方法名可能带各种后缀（如 $okhttp, $api 等），无法穷举
+ * 通过关键词模糊匹配自动发现正确的方法名，适应任意版本的 OkHttp
+ *
+ * @param {Java.Wrapper} cls - Frida Java.use() 返回的类引用
+ * @param {string} keyword - 方法名关键词，如 "getResponseWithInterceptorChain"
+ * @returns {string|null} 匹配到的方法名，未找到返回 null
+ */
+function findMethodByName(cls, keyword) {
+    try {
+        var methods = cls.class.getDeclaredMethods();
+        for (var i = 0; i < methods.length; i++) {
+            var name = methods[i].getName();
+            if (name.indexOf(keyword) !== -1) {
+                return name;
+            }
+        }
+    } catch (e) {}
+    return null;
+}
+
 /**
  * Hook OkHttp RealCall —— 拦截所有 HTTP 请求和响应
  *
- * 采用双管齐下的策略：
- *   1. Hook getResponseWithInterceptorChain()：拦截所有请求（同步+异步）的核心执行方法
- *      这是 OkHttp 内部真正发出请求并返回响应的方法，execute() 和 enqueue() 最终都会走到这里
- *      优点：无需包装 Callback，不用担心 Java.registerClass 兼容性问题
- *
- *   2. Hook enqueue(callback)：额外包装异步回调，用于捕获 onFailure 失败场景
- *      因为 getResponseWithInterceptorChain() 只能捕获成功的请求
- *      失败时（网络异常等）会在 Callback.onFailure() 中处理，不走 getResponseWithInterceptorChain()
+ * 智能搜索策略：
+ *   1. 先尝试多个已知 RealCall 类路径（不同 OkHttp 版本位置不同）
+ *   2. 在找到的类中自动搜索包含 "getResponseWithInterceptorChain" 的方法
+ *      无论方法名带什么后缀（$okhttp, $api, ProGuard 混淆等）都能匹配
+ *   3. 如果搜索不到，再降级到 execute() 作为 fallback
+ *   4. 同时 Hook enqueue(callback) 的 onResponse 作为双保险 + onFailure 捕获失败
+ *   5. 使用 markPrinted() 去重，避免两个策略都触发时双重打印
  */
 function hookRealCall() {
-    // OkHttp3.x 的 RealCall 在不同版本路径不同，依次尝试
-    var cls = tryUse("okhttp3.internal.connection.RealCall");
-    if (!cls) cls = tryUse("okhttp3.RealCall");
-    if (!cls) return;
-
-    // 打印类中所有方法名，用于排查方法名不存在的问题（如 ProGuard 混淆）
-    try {
-        var methodNames = cls.class.getDeclaredMethods().map(function (m) {
-            return m.getName();
-        });
-        console.log("[*] RealCall methods: " + methodNames.join(", "));
-    } catch (e) {
-        console.log("[-] enumerate methods error: " + e.message);
-    }
-
-    // --- 策略1：Hook getResponseWithInterceptorChain() ---
-    // 这是 OkHttp 内部方法，所有请求（无论同步 execute 还是异步 enqueue）最终都通过它执行
-    // 返回 Response 对象，包含完整的请求和响应信息
-    // 优先 Hook 此方法，因为它最简单可靠，不需要处理 Callback 包装
-    // OkHttp4 Kotlin 编译后方法名可能带 $okhttp 后缀，依次尝试
-    var getRespMethod = null;
-    var getRespNames = ["getResponseWithInterceptorChain", "getResponseWithInterceptorChain$okhttp"];
-    for (var gi = 0; gi < getRespNames.length; gi++) {
-        if (cls[getRespNames[gi]]) {
-            getRespMethod = getRespNames[gi];
+    // OkHttp 不同版本的 RealCall 类路径不同，依次尝试
+    var classPaths = [
+        "okhttp3.internal.connection.RealCall",
+        "okhttp3.RealCall"
+    ];
+    var cls = null;
+    for (var ci = 0; ci < classPaths.length; ci++) {
+        cls = tryUse(classPaths[ci]);
+        if (cls) {
+            console.log("[+] Found RealCall: " + classPaths[ci]);
             break;
         }
     }
+    if (!cls) {
+        console.log("[-] RealCall class not found in any known path");
+        return;
+    }
+
+    // --- 策略1：自动搜索并 Hook getResponseWithInterceptorChain ---
+    // 不硬编码方法名，而是通过关键词在类的所有方法中模糊搜索
+    var getRespMethod = findMethodByName(cls, "getResponseWithInterceptorChain");
 
     if (getRespMethod) {
         var getRespOv = cls[getRespMethod].overloads;
@@ -249,8 +286,13 @@ function hookRealCall() {
                 overload.implementation = function () {
                     var resp = this[methodName]();
                     try {
-                        printRequest(resp.request());
-                        printResponseHeaders(resp);
+                        // 用 Response 对象的 hashCode 唯一标识本次请求
+                        // 同一次请求的 Response 对象在 getResponseWithInterceptorChain 和 onResponse 中是同一个
+                        var key = "" + resp.hashCode();
+                        if (markPrinted(key)) {
+                            printRequest(resp.request());
+                            printResponseHeaders(resp);
+                        }
                     } catch (e) {
                         console.log("[hook " + methodName + " print error: " + e.message + "]");
                     }
@@ -260,7 +302,7 @@ function hookRealCall() {
         }
         console.log("[+] Hooked " + getRespMethod);
     } else {
-        // 方法不存在（可能被混淆），降级到 Hook execute()
+        // 搜索不到，降级到 Hook execute()
         console.log("[-] getResponseWithInterceptorChain not found, falling back to execute()");
         if (cls.execute) {
             var execOv = cls.execute.overloads;
@@ -283,8 +325,7 @@ function hookRealCall() {
     }
 
     // --- 策略2：Hook enqueue(callback) ---
-    // 目的不是为了拦截成功响应（策略1已覆盖），而是为了捕获 onFailure 失败场景
-    // 当网络异常、DNS 失败等导致请求无法完成时，Callback.onFailure() 会被调用
+    // 双重作用：(a) 作为策略1的备份打印请求/响应信息 (b) 捕获 onFailure 失败场景
     if (cls.enqueue) {
         var enqOv = cls.enqueue.overloads;
         for (var i = 0; i < enqOv.length; i++) {
@@ -299,10 +340,20 @@ function hookRealCall() {
                             name: "com.hook.OkCb" + idx,
                             implements: [Callback],
                             methods: {
+                                // 请求成功回调：作为备份打印请求/响应信息（策略1可能未触发）
                                 onResponse: function (call, response) {
-                                    // 成功响应已在策略1 Hook 中打印，此处只转发
+                                    try {
+                                        // 用 Response 的 hashCode 标识，与 getResponseWithInterceptorChain Hook 共享同一个 key
+                                        // 如果策略1已打印过，这里自动跳过；如果策略1未触发，这里补打
+                                        var key = "" + response.hashCode();
+                                        if (markPrinted(key)) {
+                                            printRequest(response.request());
+                                            printResponseHeaders(response);
+                                        }
+                                    } catch (e) {}
                                     origCb.onResponse(call, response);
                                 },
+                                // 请求失败回调：打印失败信息
                                 onFailure: function (call, e) {
                                     try {
                                         var req = call.request();
@@ -318,8 +369,7 @@ function hookRealCall() {
                         });
                         return this.enqueue(Wrapped.$new());
                     } catch (regErr) {
-                        // Java.registerClass 可能因版本兼容性失败（如 Callback 接口签名不匹配）
-                        // 降级处理：直接调用原始 enqueue，不包装回调，仅失去 onFailure 拦截能力
+                        // Java.registerClass 失败（版本兼容性等），降级到直接调用
                         console.log("[-] registerClass failed, fallback to direct enqueue: " + regErr.message);
                         return this.enqueue(callback);
                     }
