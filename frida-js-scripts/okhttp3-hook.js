@@ -1,10 +1,4 @@
 /**
- * 安全地获取 Java 类引用
- * 如果类不存在（应用未使用该类或混淆后类名改变），不会抛出异常导致脚本中断
- * @param {string} className - 完整的 Java 类名，如 "okhttp3.ResponseBody"
- * @returns {Java.Wrapper|null} 类引用，类不存在时返回 null
- */
-/**
  * OkHttp3 + Native 层 Hook 脚本
  *
  * 功能概述：
@@ -17,7 +11,13 @@
  *   frida -U -f <package_name> -l okhttp3-hook.js
  */
 
-/** 安全获取 Java 类引用，类不存在时返回 null 而不抛异常 */
+/**
+ * 安全获取 Java 类引用，类不存在时返回 null 而不抛异常
+ * 应用混淆后类名可能改变，或目标类根本不存在，用此函数避免脚本中断
+ * @param {string} className - 完整的 Java 类名，如 "okhttp3.ResponseBody"
+ * @returns {Java.Wrapper|null} 类引用，类不存在时返回 null
+ */
+function tryUse(className) {
     try {
         return Java.use(className);
     } catch (e) {
@@ -36,6 +36,7 @@ function formatHeaders(headers) {
     if (!headers) return {};
     var result = {};
     try {
+        // OkHttp Headers 的 names() 返回 Set<String>，需用 Java 迭代器遍历
         var names = headers.names();
         var it = names.iterator();
         while (it.hasNext()) {
@@ -90,6 +91,7 @@ function printRequest(request) {
         if (bodyStr && bodyStr.length > 0) {
             console.log("--------------------------------------------------------");
             var bodyLen = bodyStr.length;
+            // 截断至 2000 字符，避免超大请求体撑爆控制台输出
             console.log("  Body (" + bodyLen + "): " +
                 bodyStr.substring(0, Math.min(bodyLen, 2000)));
         }
@@ -107,6 +109,7 @@ function printRequest(request) {
  */
 function printResponseHeaders(response) {
     try {
+        // 从 Response 反查关联的 Request，用于拼接完整的请求标识信息
         var request = response.request();
         var url = request.url().toString();
         var method = request.method();
@@ -140,12 +143,20 @@ function hookResponseBodyString() {
     if (!ResponseBody) return;
 
     var overloads = ResponseBody.string.overloads;
+    // 必须遍历所有重载：OkHttp4/Kotlin 编译后可能有多个 string() 签名
+    // 用 IIFE 包裹，避免循环变量 i 在闭包中被共享（var 是函数作用域）
     for (var i = 0; i < overloads.length; i++) {
         (function (overload) {
+            // 替换 string() 的实现：先调用原始方法拿到结果，再拦截打印
+            // 应用调用 response.body().string() 时，实际执行的就是这个函数
             overload.implementation = function () {
+                // 调用原始 string()，获取返回值（此时流被消耗，但不影响，因为就是这个调用该消耗）
                 var result = this.string();
                 try {
+                    // "" + result：强制将 Java String 转为 JS string
+                    // Frida 中 Java 对象和 JS 对象不同，必须转换后才能用 JS 的 .length 属性
                     var str = result ? "" + result : "";
+                    // 这里用 str.length（JS 属性），而不是 str.length()（Java 方法）
                     var len = str.length;
                     var preview = str.substring(0, Math.min(len, 2000));
                     console.log("");
@@ -171,9 +182,12 @@ function hookResponseBodyBytes() {
     var overloads = ResponseBody.bytes.overloads;
     for (var i = 0; i < overloads.length; i++) {
         (function (overload) {
+            // 与 hookResponseBodyString 同理：替换实现，拦截返回值，原样返回
             overload.implementation = function () {
+                // 调用原始 bytes()，触发实际的流读取
                 var result = this.bytes();
                 try {
+                    // result 是 Java byte[]，.length 在 Frida 中可直接获取数组长度
                     var len = result ? result.length : 0;
                     console.log("[ResponseBody.bytes] length=" + len);
                 } catch (e) {}
@@ -203,11 +217,14 @@ function hookRealCall() {
     if (!cls) return;
 
     // Hook 同步执行方法 execute()
+    // execute() 阻塞当前线程直到收到响应，所以可以直接在 Hook 中打印 Response
     var execOv = cls.execute.overloads;
     for (var i = 0; i < execOv.length; i++) {
         (function (overload) {
             overload.implementation = function () {
+                // 调用原始 execute() 获取 Response，此时请求已实际发出并返回
                 var resp = this.execute();
+                // 通过 resp.request() 拿到关联的 Request 对象，打印完整的请求信息
                 printRequest(resp.request());
                 printResponseHeaders(resp);
                 return resp;
@@ -216,18 +233,25 @@ function hookRealCall() {
     }
 
     // Hook 异步执行方法 enqueue(callback)
+    // enqueue() 不阻塞，响应通过 Callback 回调返回，需要包装原始回调来拦截
     var enqOv = cls.enqueue.overloads;
     for (var i = 0; i < enqOv.length; i++) {
         (function (overload) {
             overload.implementation = function (callback) {
+                // 【关键】Java.retain() 防止原始 Callback 被 GC 回收
+                // Frida Java Bridge 中的对象在 GC 时会被 dispose，之后调用会报 "Wrapper is disposed"
                 var origCb = Java.retain(callback);
+                // 计数器确保每次注册的类名唯一，Java.registerClass 不允许重名
                 var idx = ++cbCounter;
                 var Callback = Java.use("okhttp3.Callback");
 
+                // 动态生成一个实现了 okhttp3.Callback 接口的 Java 类
+                // 在各个回调方法中先打印信息，再调用原始回调，实现透明拦截
                 var Wrapped = Java.registerClass({
                     name: "com.hook.OkCb" + idx,
                     implements: [Callback],
                     methods: {
+                        // 请求成功回调：打印请求和响应头后，转发给原始回调
                         onResponse: function (call, response) {
                             try {
                                 printRequest(response.request());
@@ -235,8 +259,10 @@ function hookRealCall() {
                             } catch (e) {
                                 console.log("[hook onResponse print error: " + e.message + "]");
                             }
+                            // 将 Response 原样传递给应用的原始回调，应用逻辑不受影响
                             origCb.onResponse(call, response);
                         },
+                        // 请求失败回调：打印失败信息后，转发给原始回调
                         onFailure: function (call, e) {
                             try {
                                 var req = call.request();
@@ -246,11 +272,14 @@ function hookRealCall() {
                                 console.log("  Error: " + e.getMessage());
                                 console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
                             } catch (ex) {}
+                            // 将异常原样传递给原始回调
                             origCb.onFailure(call, e);
                         }
                     }
                 });
 
+                // 用包装后的 Callback 实例替代原始 callback 传入 enqueue
+                // OkHttp 内部只看到 Callback 接口，不知道已被替换
                 return this.enqueue(Wrapped.$new());
             };
         })(enqOv[i]);
@@ -270,6 +299,7 @@ function hookWebSocket() {
     for (var i = 0; i < ov.length; i++) {
         (function (overload) {
             overload.implementation = function (text) {
+                // 打印发送的文本内容后，调用原始 send() 确保消息正常发出
                 console.log("[WebSocket TX] " + text);
                 return this.send(text);
             };
@@ -307,7 +337,9 @@ function hookNativeCrypto() {
 
         for (var i = 0; i < exports.length; i++) {
             var exp = exports[i];
+            // 仅关注函数类型的导出符号，过滤掉变量等其他类型
             if (exp.type !== "function") continue;
+            // 按命名规则筛选：包含 "NativeCrypto" 或 "native_" 的才是目标 JNI 函数
             if (exp.name.indexOf("NativeCrypto") === -1 && exp.name.indexOf("native_") === -1) continue;
 
             console.log("[+] Export: " + exp.name + " @ " + exp.address);
@@ -319,10 +351,14 @@ function hookNativeCrypto() {
                 Interceptor.attach(exportAddr, {
                     onEnter: function (args) {
                         try {
-                            // 通过 JNI Env 读取 Java String 参数（args[0] 是 JNIEnv*, args[1] 起是实际参数）
+                            // 通过 JNI Env 读取 Java String 参数
+                            // JNI 函数签名：Java_包名_方法名(JNIEnv* env, jobject thiz, ...)
+                            // 所以 args[0]=JNIEnv*, args[1]=this(对象实例), 从 args[1] 起是实际参数
+                            // 但此处 JNI 是静态方法，args[1] 就是第一个 Java 参数
                             var env = Java.vm.getEnv();
                             if (exportName.indexOf("encrypt") !== -1) {
                                 this.fnType = "encrypt";
+                                // env.getStringUtfChars() 返回 Native 指针，需再调用 .readUtf8String() 转为 JS 字符串
                                 this.input = env.getStringUtfChars(args[1], null).readUtf8String();
                                 console.log("[Native] encrypt(\"" + this.input + "\")");
                             } else if (exportName.indexOf("decrypt") !== -1) {
@@ -331,10 +367,12 @@ function hookNativeCrypto() {
                                 console.log("[Native] decrypt(\"" + this.input + "\")");
                             } else if (exportName.indexOf("verifySignature") !== -1) {
                                 this.fnType = "verifySignature";
+                                // verifySignature 有两个参数：待验证数据(args[1]) 和 签名(args[2])
                                 this.data = env.getStringUtfChars(args[1], null).readUtf8String();
                                 this.sig = env.getStringUtfChars(args[2], null).readUtf8String();
                                 console.log("[Native] verifySignature(data=\"" + this.data + "\", sig=\"" + this.sig + "\")");
                             } else if (exportName.indexOf("sign") !== -1 && exportName.indexOf("verify") === -1) {
+                                // 注意：sign 匹配时要排除 "verifySignature"（它也包含 "sign"）
                                 this.fnType = "sign";
                                 this.data = env.getStringUtfChars(args[1], null).readUtf8String();
                                 console.log("[Native] sign(\"" + this.data + "\")");
@@ -343,7 +381,10 @@ function hookNativeCrypto() {
                     },
                     onLeave: function (retval) {
                         try {
+                            // onLeave 在函数返回时触发，retval 是 Native 返回值
+                            // this.fnType 在 onEnter 中设置，通过 this 传递状态到 onLeave
                             if (this.fnType === "verifySignature") {
+                                // JNI boolean 在 Native 层是 jint，toInt32() 后非零为 true
                                 console.log("[Native] verifySignature -> " + (retval.toInt32() ? "true" : "false"));
                             } else if (this.fnType) {
                                 console.log("[Native] " + this.fnType + " -> retval=" + retval);
