@@ -298,7 +298,6 @@ function markResponsePrinted(key) {
 var chainThreadMap = {};
 var lastChainRequest = {};
 var chainCallDepth = {};
-var chainRequestPrinted = {};
 
 function extractRequestInfo(request) {
     var url = "" + request.url().toString();
@@ -312,22 +311,18 @@ function extractRequestInfo(request) {
 }
 
 function printExtractedRequest(info) {
-    tsLog("[debug-printExtractedRequest] enter, url=" + info.url);
     tsLog(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
     tsLog("[Request] " + info.method + " " + info.url);
     tsLog("--------------------------------------------------------");
     var keys = Object.keys(info.headers);
-    tsLog("[debug] printing " + keys.length + " headers");
     for (var i = 0; i < keys.length; i++) {
-        var val = info.headers[keys[i]];
-        tsLog("  " + keys[i] + ": " + val);
+        tsLog("  " + keys[i] + ": " + info.headers[keys[i]]);
     }
     if (info.body && info.body.length > 0) {
         tsLog("--------------------------------------------------------");
         tsLog("  Body (" + info.body.length + "): " + info.body.substring(0, 2000));
     }
     tsLog(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
-    tsLog("[debug-printExtractedRequest] done");
 }
 
 function hookInterceptorChain() {
@@ -349,39 +344,27 @@ function hookInterceptorChain() {
                 if (isOuterCall) {
                     chainThreadMap[tid] = true;
                     chainCallDepth[tid] = 0;
-                    chainRequestPrinted[tid] = false;
                 }
 
                 chainCallDepth[tid]++;
                 var myDepth = chainCallDepth[tid];
 
-                lastChainRequest[tid] = extractRequestInfo(request);
+                var info = extractRequestInfo(request);
+                lastChainRequest[tid] = info;
+
+                tsLog("========== [proceed depth " + myDepth + "] BEFORE network I/O ==========");
+                printExtractedRequest(info);
 
                 var resp = this.proceed(request);
 
                 chainCallDepth[tid]--;
 
-                if (!chainRequestPrinted[tid]) {
-                    chainRequestPrinted[tid] = true;
-                    var info = lastChainRequest[tid];
-                    tsLog("========== [proceed] REQUEST (depth " + myDepth + ", innermost) ==========");
-                    tsLog("[debug] url=" + (info ? info.url : "NULL"));
-                    tsLog("[debug] method=" + (info ? info.method : "NULL"));
-                    tsLog("[debug] headerKeys=" + (info ? JSON.stringify(Object.keys(info.headers)) : "NULL"));
-                    try {
-                        printExtractedRequest(info);
-                    } catch (e) {
-                        tsLog("[hook proceed print request error: " + e.message + "]");
-                    }
-                }
-
                 if (isOuterCall) {
                     delete chainThreadMap[tid];
                     delete chainCallDepth[tid];
                     delete lastChainRequest[tid];
-                    delete chainRequestPrinted[tid];
                     try {
-                        tsLog("========== [proceed] RESPONSE ==========");
+                        tsLog("========== [proceed] AFTER network I/O — RESPONSE ==========");
                         printResponseHeaders(resp, resp.code());
                     } catch (e) {
                         tsLog("[hook proceed print response error: " + e.message + "]");
