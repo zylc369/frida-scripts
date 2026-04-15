@@ -487,10 +487,188 @@ function hookNativeCrypto() {
  *   - ResponseBody.string() / bytes() (响应体读取)
  *   - WebSocket.send() (WebSocket 消息发送)
  */
+/**
+ * 诊断函数：打印 OkHttp 关键方法的所有 overload 签名信息
+ * 用于排查为什么某些方法 Hook 安装成功但 implementation 不触发
+ */
+function diagnoseOverloads() {
+    console.log("");
+    console.log("============ DIAGNOSIS: overload signatures ============");
+
+    var classes = [
+        "okhttp3.internal.http.RealInterceptorChain",
+        "okhttp3.internal.connection.RealCall",
+        "okhttp3.Response"
+    ];
+
+    for (var ci = 0; ci < classes.length; ci++) {
+        var cls = tryUse(classes[ci]);
+        if (!cls) continue;
+
+        console.log("");
+        console.log("[Class] " + classes[ci]);
+
+        // 列出所有声明的方法
+        try {
+            var methods = cls.class.getDeclaredMethods();
+            var names = [];
+            for (var m = 0; m < methods.length; m++) {
+                names.push(methods[m].getName());
+            }
+            console.log("  declared methods (" + names.length + "): " + names.join(", "));
+        } catch (e) {
+            console.log("  failed to enumerate methods: " + e.message);
+        }
+
+        // 对关键方法打印 overload 详情
+        var targetMethods = ["proceed", "execute", "enqueue", "code", "close", "string"];
+        for (var ti = 0; ti < targetMethods.length; ti++) {
+            var methodName = targetMethods[ti];
+            // 也检查带 $okhttp 后缀的方法
+            var methodNames = [methodName];
+            try {
+                var dm = cls.class.getDeclaredMethods();
+                for (var d = 0; d < dm.length; d++) {
+                    var dn = dm[d].getName();
+                    if (dn.indexOf(methodName) !== -1 && dn !== methodName) {
+                        methodNames.push(dn);
+                    }
+                }
+            } catch (e) {}
+
+            for (var mi = 0; mi < methodNames.length; mi++) {
+                var mName = methodNames[mi];
+                try {
+                    if (!cls[mName]) {
+                        console.log("  " + mName + ": NOT accessible via Frida wrapper (cls[mName] is falsy)");
+                        continue;
+                    }
+                    var ovs = cls[mName].overloads;
+                    if (ovs.length === 0) {
+                        console.log("  " + mName + ": 0 overloads!");
+                        continue;
+                    }
+                    for (var oi = 0; oi < ovs.length; oi++) {
+                        var argTypes = [];
+                        try {
+                            for (var ai = 0; ai < ovs[oi].argumentTypes.length; ai++) {
+                                argTypes.push(ovs[oi].argumentTypes[ai].className);
+                            }
+                        } catch (e) {
+                            argTypes.push("ERROR: " + e.message);
+                        }
+                        var retType = "UNKNOWN";
+                        try {
+                            retType = ovs[oi].returnType.className;
+                        } catch (e) {}
+                        console.log("  " + mName + " overload[" + oi + "]: (" + argTypes.join(", ") + ") -> " + retType);
+                    }
+                } catch (e) {
+                    console.log("  " + mName + ": error - " + e.message);
+                }
+            }
+        }
+    }
+    console.log("============ END DIAGNOSIS ============");
+    console.log("");
+}
+
+/**
+ * 验证函数：对之前不触发的 Hook 点加验证逻辑
+ * 1. Hook 后立即读回 implementation，确认覆盖成功
+ * 2. 设置标志位，如果 implementation 被调用则置 true
+ * 3. 5 秒后检查标志位，判断是否被 ART 内联绕过
+ */
+function verifyHooks() {
+    console.log("============ VERIFY: hook trigger test ============");
+
+    // --- 验证 RealInterceptorChain.proceed ---
+    var chainCls = tryUse("okhttp3.internal.http.RealInterceptorChain");
+    if (chainCls && chainCls.proceed) {
+        var proceedTriggered = false;
+        var proceedOv = chainCls.proceed.overloads;
+        console.log("[verify] proceed: setting implementation on " + proceedOv.length + " overload(s)");
+        proceedOv[0].implementation = function (request) {
+            proceedTriggered = true;
+            console.log("[verify] ✅ proceed() WAS CALLED! request=" + request.url().toString());
+            return this.proceed(request);
+        };
+        // 读回确认 implementation 已被设置
+        console.log("[verify] proceed implementation set: " + (proceedOv[0].implementation !== undefined));
+
+        setTimeout(function () {
+            console.log("[verify] proceed triggered after 5s: " + proceedTriggered);
+        }, 8000);
+    } else {
+        console.log("[verify] proceed: class or method not found");
+    }
+
+    // --- 验证 Response.code ---
+    var respCls = tryUse("okhttp3.Response");
+    if (respCls && respCls.code) {
+        var codeTriggered = false;
+        var codeOv = respCls.code.overloads;
+        console.log("[verify] code: setting implementation on " + codeOv.length + " overload(s)");
+        codeOv[0].implementation = function () {
+            codeTriggered = true;
+            console.log("[verify] ✅ code() WAS CALLED!");
+            return this.code();
+        };
+        console.log("[verify] code implementation set: " + (codeOv[0].implementation !== undefined));
+
+        setTimeout(function () {
+            console.log("[verify] code triggered after 5s: " + codeTriggered);
+        }, 8000);
+    } else {
+        console.log("[verify] code: class or method not found");
+    }
+
+    // --- 验证 Response.close ---
+    if (respCls && respCls.close) {
+        var closeTriggered = false;
+        var closeOv = respCls.close.overloads;
+        console.log("[verify] close: setting implementation on " + closeOv.length + " overload(s)");
+        closeOv[0].implementation = function () {
+            closeTriggered = true;
+            console.log("[verify] ✅ close() WAS CALLED!");
+            return this.close();
+        };
+        console.log("[verify] close implementation set: " + (closeOv[0].implementation !== undefined));
+
+        setTimeout(function () {
+            console.log("[verify] close triggered after 5s: " + closeTriggered);
+        }, 8000);
+    }
+
+    // --- 对照组：已知能触发的 enqueue ---
+    var callCls = tryUse("okhttp3.internal.connection.RealCall");
+    if (callCls && callCls.enqueue) {
+        var enqueueTriggered = false;
+        var enqOv = callCls.enqueue.overloads;
+        console.log("[verify] enqueue: setting implementation on " + enqOv.length + " overload(s)");
+        enqOv[0].implementation = function (callback) {
+            enqueueTriggered = true;
+            console.log("[verify] ✅ enqueue() WAS CALLED!");
+            return this.enqueue(callback);
+        };
+        console.log("[verify] enqueue implementation set: " + (enqOv[0].implementation !== undefined));
+
+        setTimeout(function () {
+            console.log("[verify] enqueue triggered after 5s: " + enqueueTriggered);
+        }, 8000);
+    }
+
+    console.log("============ END VERIFY (results in 5s) ============");
+    console.log("");
+}
+
 function hookJava() {
     console.log("============================================================");
     console.log("[*] OkHttp3 + Native Hook Script Starting...");
     console.log("============================================================");
+
+    diagnoseOverloads();
+    verifyHooks();
 
     hookRealCall();
     hookResponseClose();
