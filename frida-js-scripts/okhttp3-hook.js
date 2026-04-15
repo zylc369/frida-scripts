@@ -145,9 +145,6 @@ function hookResponseBodyString() {
     var ResponseBody = tryUse("okhttp3.ResponseBody");
     if (!ResponseBody) return;
 
-    // 去重：记录已打印过完整信息的 Response，避免应用多次调用 string() 时重复打印
-    var printedKeys = {};
-
     var overloads = ResponseBody.string.overloads;
     for (var i = 0; i < overloads.length; i++) {
         (function (overload) {
@@ -157,9 +154,9 @@ function hookResponseBodyString() {
                     var str = result ? "" + result : "";
                     var len = str.length;
 
-                    // 通过 Java.choose 在堆上查找当前线程持有的 Response 对象
-                    // Response.body() 返回的就是当前这个 ResponseBody，所以可以匹配
-                    // 匹配到后，一次打印完整的请求头+响应头+响应体
+                    // 通过 Java.choose 在堆上查找持有当前 ResponseBody 的 Response 对象
+                    // 匹配到后，一次打印完整的请求头+响应头
+                    // 使用全局的 markResponsePrinted 与 hookResponseClose 共享去重状态
                     var Response = Java.use("okhttp3.Response");
                     var currentBody = this;
                     var foundResponse = null;
@@ -177,21 +174,13 @@ function hookResponseBodyString() {
                     });
 
                     if (foundResponse) {
-                        // 用 Response 的 hashCode 去重
                         var key = "" + foundResponse.hashCode();
-                        if (!printedKeys[key]) {
-                            printedKeys[key] = true;
-                            // 5秒后清理去重记录
-                            setTimeout(function () { delete printedKeys[key]; }, 5000);
-
-                            // 打印完整的请求头（经过所有拦截器处理后的最终请求）
+                        if (markResponsePrinted(key)) {
                             printRequest(foundResponse.request());
-                            // 打印响应头（通过 Frida JNI 反射获取，不受 ART 内联影响）
                             printResponseHeaders(foundResponse, foundResponse.code());
                         }
                     }
 
-                    // 打印响应体
                     console.log("");
                     console.log("<<<<<<<<<<<<<<<< [ResponseBody] <<<<<<<<<<<<<<<<<<<<<<<<");
                     console.log("  Body (" + len + "): " + str.substring(0, Math.min(len, 2000)));
@@ -252,6 +241,36 @@ var cbCounter = 0;
  *   - ResponseBody.string()/bytes() → 打印完整的请求头+响应头+响应体
  *     因为此时 Response 对象完全可用，通过 Frida JNI 反射读取所有信息
  */
+// 已打印过完整信息的 Response 去重集合，避免 hookResponseBodyString 和 hookResponseClose 重复打印
+// key = Response.hashCode(), value = true
+var printedResponses = {};
+
+/**
+ * 标记 Response 已打印，返回 true 表示首次（应打印）
+ * 3 秒后自动清理，防止内存泄漏
+ */
+function markResponsePrinted(key) {
+    if (printedResponses[key]) return false;
+    printedResponses[key] = true;
+    setTimeout(function () { delete printedResponses[key]; }, 3000);
+    return true;
+}
+
+/**
+ * Hook OkHttp 请求和响应
+ *
+ * 三个 Hook 点组合，覆盖成功和失败场景：
+ *
+ *   1. enqueue() / execute() — 打印完整请求信息（所有场景，包括失败）
+ *      enqueue 时 this.request() 可能缺少拦截器添加的自定义头，但基本信息（URL、method、用户自定义头）都有
+ *
+ *   2. ResponseBody.string() — 打印完整响应头+响应体（仅成功场景）
+ *      应用调用 response.body().string() 时触发，通过 Java.choose 找到 Response 打印完整信息
+ *
+ *   3. Response.close() — 打印即将被关闭的响应信息（覆盖失败/重试场景）
+ *      当 RetryInterceptor 关闭非成功响应（如 405）时触发，此时 Response 信息完整可用
+ *      使用 markResponsePrinted 与 hookResponseBodyString 去重，避免成功时双重打印
+ */
 function hookRealCall() {
     var callPaths = [
         "okhttp3.internal.connection.RealCall",
@@ -270,15 +289,16 @@ function hookRealCall() {
         return;
     }
 
-    // Hook enqueue：打印请求 URL 摘要
+    // Hook enqueue：打印完整请求信息
     if (cls.enqueue) {
         var enqOv = cls.enqueue.overloads;
         for (var i = 0; i < enqOv.length; i++) {
             (function (overload) {
                 overload.implementation = function (callback) {
                     try {
-                        var req = this.request();
-                        console.log("[Request] >>>> " + req.method() + " " + req.url().toString());
+                        // this.request() 包含用户在 RequestBuilder 中设置的头
+                        // 但不包含 AppInterceptor 添加的 X-App-Version 等（那些在拦截器链中才加上）
+                        printRequest(this.request());
                     } catch (e) {}
                     return this.enqueue(callback);
                 };
@@ -287,7 +307,7 @@ function hookRealCall() {
         console.log("[+] Hooked enqueue");
     }
 
-    // Hook execute：直接打印完整信息（同步请求的 Response 立即可用）
+    // Hook execute：直接打印完整信息
     if (cls.execute) {
         var execOv = cls.execute.overloads;
         for (var i = 0; i < execOv.length; i++) {
@@ -304,6 +324,35 @@ function hookRealCall() {
         }
         console.log("[+] Hooked execute");
     }
+}
+
+/**
+ * Hook Response.close() —— 捕获失败/重试场景下即将被关闭的响应
+ *
+ * 场景：RetryInterceptor 收到非成功响应（如 405）后关闭 Response 重试
+ * 此时 Response 信息完整可用，但如果不在此捕获就永远丢失了
+ * 成功场景下 Response 也会被关闭，但此时信息已由 hookResponseBodyString 打印过
+ * 通过 markResponsePrinted 去重，确保不重复打印
+ */
+function hookResponseClose() {
+    var Response = tryUse("okhttp3.Response");
+    if (!Response || !Response.close) return;
+
+    var closeOv = Response.close.overloads;
+    for (var i = 0; i < closeOv.length; i++) {
+        (function (overload) {
+            overload.implementation = function () {
+                try {
+                    var key = "" + this.hashCode();
+                    if (markResponsePrinted(key)) {
+                        printResponseHeaders(this, this.code());
+                    }
+                } catch (e) {}
+                return this.close();
+            };
+        })(closeOv[i]);
+    }
+    console.log("[+] Hooked Response.close");
 }
 
 /**
@@ -444,6 +493,7 @@ function hookJava() {
     console.log("============================================================");
 
     hookRealCall();
+    hookResponseClose();
     hookResponseBodyString();
     hookResponseBodyBytes();
     hookWebSocket();
