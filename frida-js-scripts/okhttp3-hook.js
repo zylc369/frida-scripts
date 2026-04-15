@@ -17,11 +17,20 @@
  * @param {string} className - 完整的 Java 类名，如 "okhttp3.ResponseBody"
  * @returns {Java.Wrapper|null} 类引用，类不存在时返回 null
  */
+function tsLog(msg) {
+    var d = new Date();
+    var ts = d.getHours() + ":" +
+        ("0" + d.getMinutes()).slice(-2) + ":" +
+        ("0" + d.getSeconds()).slice(-2) + "." +
+        ("00" + d.getMilliseconds()).slice(-3);
+    console.log("[" + ts + "] " + msg);
+}
+
 function tryUse(className) {
     try {
         return Java.use(className);
     } catch (e) {
-        console.log("[-] Class not found: " + className);
+        tsLog("[-] Class not found: " + className);
         return null;
     }
 }
@@ -36,12 +45,11 @@ function formatHeaders(headers) {
     if (!headers) return {};
     var result = {};
     try {
-        // OkHttp Headers 的 names() 返回 Set<String>，需用 Java 迭代器遍历
         var names = headers.names();
         var it = names.iterator();
         while (it.hasNext()) {
-            var name = it.next();
-            result[name] = headers.get(name);
+            var name = "" + it.next();
+            result[name] = "" + headers.get(name);
         }
     } catch (e) {}
     return result;
@@ -80,24 +88,24 @@ function printRequest(request) {
         var headers = formatHeaders(request.headers());
         var bodyStr = readRequestBody(request);
 
-        console.log("");
-        console.log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
-        console.log("[Request] " + method + " " + url);
-        console.log("--------------------------------------------------------");
+        tsLog("");
+        tsLog(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+        tsLog("[Request] " + method + " " + url);
+        tsLog("--------------------------------------------------------");
         var keys = Object.keys(headers);
         for (var i = 0; i < keys.length; i++) {
-            console.log("  " + keys[i] + ": " + headers[keys[i]]);
+            tsLog("  " + keys[i] + ": " + headers[keys[i]]);
         }
         if (bodyStr && bodyStr.length > 0) {
-            console.log("--------------------------------------------------------");
+            tsLog("--------------------------------------------------------");
             var bodyLen = bodyStr.length;
             // 截断至 2000 字符，避免超大请求体撑爆控制台输出
-            console.log("  Body (" + bodyLen + "): " +
+            tsLog("  Body (" + bodyLen + "): " +
                 bodyStr.substring(0, Math.min(bodyLen, 2000)));
         }
-        console.log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+        tsLog(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
     } catch (e) {
-        console.log("[Request print error: " + e.message + "]");
+        tsLog("[Request print error: " + e.message + "]");
     }
 }
 
@@ -114,17 +122,17 @@ function printResponseHeaders(response, code) {
         var msg = response.message();
         var headers = formatHeaders(response.headers());
 
-        console.log("");
-        console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-        console.log("[Response] " + code + " " + msg + " (" + method + " " + url + ")");
-        console.log("--------------------------------------------------------");
+        tsLog("");
+        tsLog("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+        tsLog("[Response] " + code + " " + msg + " (" + method + " " + url + ")");
+        tsLog("--------------------------------------------------------");
         var keys = Object.keys(headers);
         for (var i = 0; i < keys.length; i++) {
-            console.log("  " + keys[i] + ": " + headers[keys[i]]);
+            tsLog("  " + keys[i] + ": " + headers[keys[i]]);
         }
-        console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+        tsLog("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
     } catch (e) {
-        console.log("[Response headers print error: " + e.message + "]");
+        tsLog("[Response headers print error: " + e.message + "]");
     }
 }
 
@@ -181,10 +189,10 @@ function hookResponseBodyString() {
                         }
                     }
 
-                    console.log("");
-                    console.log("<<<<<<<<<<<<<<<< [ResponseBody] <<<<<<<<<<<<<<<<<<<<<<<<");
-                    console.log("  Body (" + len + "): " + str.substring(0, Math.min(len, 2000)));
-                    console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+                    tsLog("");
+                    tsLog("<<<<<<<<<<<<<<<< [ResponseBody] <<<<<<<<<<<<<<<<<<<<<<<<");
+                    tsLog("  Body (" + len + "): " + str.substring(0, Math.min(len, 2000)));
+                    tsLog("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
                 } catch (e) {}
                 return result;
             };
@@ -211,7 +219,7 @@ function hookResponseBodyBytes() {
                 try {
                     // result 是 Java byte[]，.length 在 Frida 中可直接获取数组长度
                     var len = result ? result.length : 0;
-                    console.log("[ResponseBody.bytes] length=" + len);
+                    tsLog("[ResponseBody.bytes] length=" + len);
                 } catch (e) {}
                 return result;
             };
@@ -271,6 +279,122 @@ function markResponsePrinted(key) {
  *      当 RetryInterceptor 关闭非成功响应（如 405）时触发，此时 Response 信息完整可用
  *      使用 markResponsePrinted 与 hookResponseBodyString 去重，避免成功时双重打印
  */
+/**
+ * Hook RealInterceptorChain.proceed(Request) —— 在拦截器链中打印完整请求信息
+ *
+ * 【实验性】诊断日志确认：
+ *   - proceed 有 1 个 overload，签名 (okhttp3.Request) -> okhttp3.Response，正确
+ *   - 验证中 proceed 5 秒后 false，但 enqueue 也是 false（用户还没发请求）
+ *   - 同次的 code() 验证在实际请求后触发了，说明 ART 内联假设不成立
+ *
+ * proceed 在拦截器链内部执行，此时：
+ *   - request 已经过所有应用拦截器处理，包含完整的自定义头（X-App-Version 等）
+ *   - chain.proceed(request) 之前打印 = 请求发出前，时机正确
+ *   - chain.proceed(request) 返回 Response 后打印 = 响应头可用
+ *
+ * 用 ThreadLocal 模式（chainThreadMap）只打印最外层调用，避免多层拦截器重复
+ * 允许与 enqueue 的请求打印共存（实验阶段允许重复打印）
+ */
+var chainThreadMap = {};
+var lastChainRequest = {};
+var chainCallDepth = {};
+var chainRequestPrinted = {};
+
+function extractRequestInfo(request) {
+    var url = "" + request.url().toString();
+    var method = "" + request.method();
+    var headers = formatHeaders(request.headers());
+    var bodyStr = "";
+    try {
+        bodyStr = readRequestBody(request);
+    } catch (e) {}
+    return { url: url, method: method, headers: headers, body: "" + bodyStr };
+}
+
+function printExtractedRequest(info) {
+    tsLog("[debug-printExtractedRequest] enter, url=" + info.url);
+    tsLog(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+    tsLog("[Request] " + info.method + " " + info.url);
+    tsLog("--------------------------------------------------------");
+    var keys = Object.keys(info.headers);
+    tsLog("[debug] printing " + keys.length + " headers");
+    for (var i = 0; i < keys.length; i++) {
+        var val = info.headers[keys[i]];
+        tsLog("  " + keys[i] + ": " + val);
+    }
+    if (info.body && info.body.length > 0) {
+        tsLog("--------------------------------------------------------");
+        tsLog("  Body (" + info.body.length + "): " + info.body.substring(0, 2000));
+    }
+    tsLog(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
+    tsLog("[debug-printExtractedRequest] done");
+}
+
+function hookInterceptorChain() {
+    var chainCls = tryUse("okhttp3.internal.http.RealInterceptorChain");
+    if (!chainCls || !chainCls.proceed) {
+        tsLog("[-] RealInterceptorChain.proceed not found");
+        return;
+    }
+
+    var ov = chainCls.proceed.overloads;
+    tsLog("[*] proceed overloads: " + ov.length);
+
+    for (var i = 0; i < ov.length; i++) {
+        (function (overload) {
+            overload.implementation = function (request) {
+                var tid = Process.getCurrentThreadId();
+                var isOuterCall = !chainThreadMap[tid];
+
+                if (isOuterCall) {
+                    chainThreadMap[tid] = true;
+                    chainCallDepth[tid] = 0;
+                    chainRequestPrinted[tid] = false;
+                }
+
+                chainCallDepth[tid]++;
+                var myDepth = chainCallDepth[tid];
+
+                lastChainRequest[tid] = extractRequestInfo(request);
+
+                var resp = this.proceed(request);
+
+                chainCallDepth[tid]--;
+
+                if (!chainRequestPrinted[tid]) {
+                    chainRequestPrinted[tid] = true;
+                    var info = lastChainRequest[tid];
+                    tsLog("========== [proceed] REQUEST (depth " + myDepth + ", innermost) ==========");
+                    tsLog("[debug] url=" + (info ? info.url : "NULL"));
+                    tsLog("[debug] method=" + (info ? info.method : "NULL"));
+                    tsLog("[debug] headerKeys=" + (info ? JSON.stringify(Object.keys(info.headers)) : "NULL"));
+                    try {
+                        printExtractedRequest(info);
+                    } catch (e) {
+                        tsLog("[hook proceed print request error: " + e.message + "]");
+                    }
+                }
+
+                if (isOuterCall) {
+                    delete chainThreadMap[tid];
+                    delete chainCallDepth[tid];
+                    delete lastChainRequest[tid];
+                    delete chainRequestPrinted[tid];
+                    try {
+                        tsLog("========== [proceed] RESPONSE ==========");
+                        printResponseHeaders(resp, resp.code());
+                    } catch (e) {
+                        tsLog("[hook proceed print response error: " + e.message + "]");
+                    }
+                }
+
+                return resp;
+            };
+        })(ov[i]);
+    }
+    tsLog("[+] Hooked RealInterceptorChain.proceed");
+}
+
 function hookRealCall() {
     var callPaths = [
         "okhttp3.internal.connection.RealCall",
@@ -280,12 +404,12 @@ function hookRealCall() {
     for (var ci = 0; ci < callPaths.length; ci++) {
         cls = tryUse(callPaths[ci]);
         if (cls) {
-            console.log("[+] Found RealCall: " + callPaths[ci]);
+            tsLog("[+] Found RealCall: " + callPaths[ci]);
             break;
         }
     }
     if (!cls) {
-        console.log("[-] RealCall class not found");
+        tsLog("[-] RealCall class not found");
         return;
     }
 
@@ -304,7 +428,7 @@ function hookRealCall() {
                 };
             })(enqOv[i]);
         }
-        console.log("[+] Hooked enqueue");
+        tsLog("[+] Hooked enqueue");
     }
 
     // Hook execute：直接打印完整信息
@@ -322,7 +446,7 @@ function hookRealCall() {
                 };
             })(execOv[i]);
         }
-        console.log("[+] Hooked execute");
+        tsLog("[+] Hooked execute");
     }
 }
 
@@ -352,7 +476,7 @@ function hookResponseClose() {
             };
         })(closeOv[i]);
     }
-    console.log("[+] Hooked Response.close");
+    tsLog("[+] Hooked Response.close");
 }
 
 /**
@@ -369,7 +493,7 @@ function hookWebSocket() {
         (function (overload) {
             overload.implementation = function (text) {
                 // 打印发送的文本内容后，调用原始 send() 确保消息正常发出
-                console.log("[WebSocket TX] " + text);
+                tsLog("[WebSocket TX] " + text);
                 return this.send(text);
             };
         })(ov[i]);
@@ -390,7 +514,7 @@ function hookWebSocket() {
  *   - verifySignature: 签名验证，读取数据和签名，打印验证结果(true/false)
  */
 function hookNativeCrypto() {
-    console.log("[*] Hooking NativeCrypto JNI methods...");
+    tsLog("[*] Hooking NativeCrypto JNI methods...");
 
     var libName = "libnative-lib.so";
 
@@ -399,10 +523,10 @@ function hookNativeCrypto() {
         var mod = Process.findModuleByName(libName);
         if (!mod) return false;
 
-        console.log("[+] " + libName + " base: " + mod.baseAddress);
+        tsLog("[+] " + libName + " base: " + mod.baseAddress);
         // 枚举 SO 库所有导出符号，筛选 JNI 相关函数
         var exports = mod.enumerateExports();
-        console.log("[+] Found " + exports.length + " exports");
+        tsLog("[+] Found " + exports.length + " exports");
 
         for (var i = 0; i < exports.length; i++) {
             var exp = exports[i];
@@ -411,7 +535,7 @@ function hookNativeCrypto() {
             // 按命名规则筛选：包含 "NativeCrypto" 或 "native_" 的才是目标 JNI 函数
             if (exp.name.indexOf("NativeCrypto") === -1 && exp.name.indexOf("native_") === -1) continue;
 
-            console.log("[+] Export: " + exp.name + " @ " + exp.address);
+            tsLog("[+] Export: " + exp.name + " @ " + exp.address);
 
             // 使用 IIFE 捕获循环变量，避免闭包变量共享问题
             (function (exportName, exportAddr) {
@@ -429,22 +553,22 @@ function hookNativeCrypto() {
                                 this.fnType = "encrypt";
                                 // env.getStringUtfChars() 返回 Native 指针，需再调用 .readUtf8String() 转为 JS 字符串
                                 this.input = env.getStringUtfChars(args[1], null).readUtf8String();
-                                console.log("[Native] encrypt(\"" + this.input + "\")");
+                                tsLog("[Native] encrypt(\"" + this.input + "\")");
                             } else if (exportName.indexOf("decrypt") !== -1) {
                                 this.fnType = "decrypt";
                                 this.input = env.getStringUtfChars(args[1], null).readUtf8String();
-                                console.log("[Native] decrypt(\"" + this.input + "\")");
+                                tsLog("[Native] decrypt(\"" + this.input + "\")");
                             } else if (exportName.indexOf("verifySignature") !== -1) {
                                 this.fnType = "verifySignature";
                                 // verifySignature 有两个参数：待验证数据(args[1]) 和 签名(args[2])
                                 this.data = env.getStringUtfChars(args[1], null).readUtf8String();
                                 this.sig = env.getStringUtfChars(args[2], null).readUtf8String();
-                                console.log("[Native] verifySignature(data=\"" + this.data + "\", sig=\"" + this.sig + "\")");
+                                tsLog("[Native] verifySignature(data=\"" + this.data + "\", sig=\"" + this.sig + "\")");
                             } else if (exportName.indexOf("sign") !== -1 && exportName.indexOf("verify") === -1) {
                                 // 注意：sign 匹配时要排除 "verifySignature"（它也包含 "sign"）
                                 this.fnType = "sign";
                                 this.data = env.getStringUtfChars(args[1], null).readUtf8String();
-                                console.log("[Native] sign(\"" + this.data + "\")");
+                                tsLog("[Native] sign(\"" + this.data + "\")");
                             }
                         } catch (e) {}
                     },
@@ -454,9 +578,9 @@ function hookNativeCrypto() {
                             // this.fnType 在 onEnter 中设置，通过 this 传递状态到 onLeave
                             if (this.fnType === "verifySignature") {
                                 // JNI boolean 在 Native 层是 jint，toInt32() 后非零为 true
-                                console.log("[Native] verifySignature -> " + (retval.toInt32() ? "true" : "false"));
+                                tsLog("[Native] verifySignature -> " + (retval.toInt32() ? "true" : "false"));
                             } else if (this.fnType) {
-                                console.log("[Native] " + this.fnType + " -> retval=" + retval);
+                                tsLog("[Native] " + this.fnType + " -> retval=" + retval);
                             }
                         } catch (e) {}
                     }
@@ -469,14 +593,14 @@ function hookNativeCrypto() {
     // SO 库可能延迟加载，轮询等待直到模块可用
     try {
         if (!doHook()) {
-            console.log("[-] " + libName + " not loaded, waiting...");
+            tsLog("[-] " + libName + " not loaded, waiting...");
             // 每秒轮询一次，直到 SO 库加载成功
             var timer = setInterval(function () {
                 try { if (doHook()) clearInterval(timer); } catch (e) { clearInterval(timer); }
             }, 1000);
         }
     } catch (e) {
-        console.log("[-] Native hook error: " + e.message);
+        tsLog("[-] Native hook error: " + e.message);
     }
 }
 
@@ -492,8 +616,8 @@ function hookNativeCrypto() {
  * 用于排查为什么某些方法 Hook 安装成功但 implementation 不触发
  */
 function diagnoseOverloads() {
-    console.log("");
-    console.log("============ DIAGNOSIS: overload signatures ============");
+    tsLog("");
+    tsLog("============ DIAGNOSIS: overload signatures ============");
 
     var classes = [
         "okhttp3.internal.http.RealInterceptorChain",
@@ -505,8 +629,8 @@ function diagnoseOverloads() {
         var cls = tryUse(classes[ci]);
         if (!cls) continue;
 
-        console.log("");
-        console.log("[Class] " + classes[ci]);
+        tsLog("");
+        tsLog("[Class] " + classes[ci]);
 
         // 列出所有声明的方法
         try {
@@ -515,9 +639,9 @@ function diagnoseOverloads() {
             for (var m = 0; m < methods.length; m++) {
                 names.push(methods[m].getName());
             }
-            console.log("  declared methods (" + names.length + "): " + names.join(", "));
+            tsLog("  declared methods (" + names.length + "): " + names.join(", "));
         } catch (e) {
-            console.log("  failed to enumerate methods: " + e.message);
+            tsLog("  failed to enumerate methods: " + e.message);
         }
 
         // 对关键方法打印 overload 详情
@@ -540,12 +664,12 @@ function diagnoseOverloads() {
                 var mName = methodNames[mi];
                 try {
                     if (!cls[mName]) {
-                        console.log("  " + mName + ": NOT accessible via Frida wrapper (cls[mName] is falsy)");
+                        tsLog("  " + mName + ": NOT accessible via Frida wrapper (cls[mName] is falsy)");
                         continue;
                     }
                     var ovs = cls[mName].overloads;
                     if (ovs.length === 0) {
-                        console.log("  " + mName + ": 0 overloads!");
+                        tsLog("  " + mName + ": 0 overloads!");
                         continue;
                     }
                     for (var oi = 0; oi < ovs.length; oi++) {
@@ -561,16 +685,16 @@ function diagnoseOverloads() {
                         try {
                             retType = ovs[oi].returnType.className;
                         } catch (e) {}
-                        console.log("  " + mName + " overload[" + oi + "]: (" + argTypes.join(", ") + ") -> " + retType);
+                        tsLog("  " + mName + " overload[" + oi + "]: (" + argTypes.join(", ") + ") -> " + retType);
                     }
                 } catch (e) {
-                    console.log("  " + mName + ": error - " + e.message);
+                    tsLog("  " + mName + ": error - " + e.message);
                 }
             }
         }
     }
-    console.log("============ END DIAGNOSIS ============");
-    console.log("");
+    tsLog("============ END DIAGNOSIS ============");
+    tsLog("");
 }
 
 /**
@@ -580,27 +704,27 @@ function diagnoseOverloads() {
  * 3. 5 秒后检查标志位，判断是否被 ART 内联绕过
  */
 function verifyHooks() {
-    console.log("============ VERIFY: hook trigger test ============");
+    tsLog("============ VERIFY: hook trigger test ============");
 
     // --- 验证 RealInterceptorChain.proceed ---
     var chainCls = tryUse("okhttp3.internal.http.RealInterceptorChain");
     if (chainCls && chainCls.proceed) {
         var proceedTriggered = false;
         var proceedOv = chainCls.proceed.overloads;
-        console.log("[verify] proceed: setting implementation on " + proceedOv.length + " overload(s)");
+        tsLog("[verify] proceed: setting implementation on " + proceedOv.length + " overload(s)");
         proceedOv[0].implementation = function (request) {
             proceedTriggered = true;
-            console.log("[verify] ✅ proceed() WAS CALLED! request=" + request.url().toString());
+            tsLog("[verify] ✅ proceed() WAS CALLED! request=" + request.url().toString());
             return this.proceed(request);
         };
         // 读回确认 implementation 已被设置
-        console.log("[verify] proceed implementation set: " + (proceedOv[0].implementation !== undefined));
+        tsLog("[verify] proceed implementation set: " + (proceedOv[0].implementation !== undefined));
 
         setTimeout(function () {
-            console.log("[verify] proceed triggered after 5s: " + proceedTriggered);
+            tsLog("[verify] proceed triggered after 5s: " + proceedTriggered);
         }, 8000);
     } else {
-        console.log("[verify] proceed: class or method not found");
+        tsLog("[verify] proceed: class or method not found");
     }
 
     // --- 验证 Response.code ---
@@ -608,35 +732,35 @@ function verifyHooks() {
     if (respCls && respCls.code) {
         var codeTriggered = false;
         var codeOv = respCls.code.overloads;
-        console.log("[verify] code: setting implementation on " + codeOv.length + " overload(s)");
+        tsLog("[verify] code: setting implementation on " + codeOv.length + " overload(s)");
         codeOv[0].implementation = function () {
             codeTriggered = true;
-            console.log("[verify] ✅ code() WAS CALLED!");
+            tsLog("[verify] ✅ code() WAS CALLED!");
             return this.code();
         };
-        console.log("[verify] code implementation set: " + (codeOv[0].implementation !== undefined));
+        tsLog("[verify] code implementation set: " + (codeOv[0].implementation !== undefined));
 
         setTimeout(function () {
-            console.log("[verify] code triggered after 5s: " + codeTriggered);
+            tsLog("[verify] code triggered after 5s: " + codeTriggered);
         }, 8000);
     } else {
-        console.log("[verify] code: class or method not found");
+        tsLog("[verify] code: class or method not found");
     }
 
     // --- 验证 Response.close ---
     if (respCls && respCls.close) {
         var closeTriggered = false;
         var closeOv = respCls.close.overloads;
-        console.log("[verify] close: setting implementation on " + closeOv.length + " overload(s)");
+        tsLog("[verify] close: setting implementation on " + closeOv.length + " overload(s)");
         closeOv[0].implementation = function () {
             closeTriggered = true;
-            console.log("[verify] ✅ close() WAS CALLED!");
+            tsLog("[verify] ✅ close() WAS CALLED!");
             return this.close();
         };
-        console.log("[verify] close implementation set: " + (closeOv[0].implementation !== undefined));
+        tsLog("[verify] close implementation set: " + (closeOv[0].implementation !== undefined));
 
         setTimeout(function () {
-            console.log("[verify] close triggered after 5s: " + closeTriggered);
+            tsLog("[verify] close triggered after 5s: " + closeTriggered);
         }, 8000);
     }
 
@@ -645,38 +769,39 @@ function verifyHooks() {
     if (callCls && callCls.enqueue) {
         var enqueueTriggered = false;
         var enqOv = callCls.enqueue.overloads;
-        console.log("[verify] enqueue: setting implementation on " + enqOv.length + " overload(s)");
+        tsLog("[verify] enqueue: setting implementation on " + enqOv.length + " overload(s)");
         enqOv[0].implementation = function (callback) {
             enqueueTriggered = true;
-            console.log("[verify] ✅ enqueue() WAS CALLED!");
+            tsLog("[verify] ✅ enqueue() WAS CALLED!");
             return this.enqueue(callback);
         };
-        console.log("[verify] enqueue implementation set: " + (enqOv[0].implementation !== undefined));
+        tsLog("[verify] enqueue implementation set: " + (enqOv[0].implementation !== undefined));
 
         setTimeout(function () {
-            console.log("[verify] enqueue triggered after 5s: " + enqueueTriggered);
+            tsLog("[verify] enqueue triggered after 5s: " + enqueueTriggered);
         }, 8000);
     }
 
-    console.log("============ END VERIFY (results in 5s) ============");
-    console.log("");
+    tsLog("============ END VERIFY (results in 5s) ============");
+    tsLog("");
 }
 
 function hookJava() {
-    console.log("============================================================");
-    console.log("[*] OkHttp3 + Native Hook Script Starting...");
-    console.log("============================================================");
+    tsLog("============================================================");
+    tsLog("[*] OkHttp3 + Native Hook Script Starting...");
+    tsLog("============================================================");
 
     diagnoseOverloads();
     verifyHooks();
 
     hookRealCall();
+    hookInterceptorChain();
     hookResponseClose();
     hookResponseBodyString();
     hookResponseBodyBytes();
     hookWebSocket();
 
-    console.log("[+] All hooks installed");
+    tsLog("[+] All hooks installed");
 }
 
 // 脚本入口：延迟 3 秒后启动，等待目标应用完成初始化
