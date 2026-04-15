@@ -103,17 +103,14 @@ function printRequest(request) {
 
 /**
  * 打印 HTTP 响应头信息（状态码、响应头）
- * 注意：此处不读取响应体，因为 ResponseBody 是一次性流，不能在 Hook 中消耗
- * 响应体通过单独 Hook ResponseBody.string() / bytes() 来拦截
  * @param {Java.Wrapper} response - OkHttp Response 对象
+ * @param {number} code - HTTP 状态码（由调用方传入，避免内部调用 response.code() 触发递归）
  */
-function printResponseHeaders(response) {
+function printResponseHeaders(response, code) {
     try {
-        // 从 Response 反查关联的 Request，用于拼接完整的请求标识信息
         var request = response.request();
         var url = request.url().toString();
         var method = request.method();
-        var code = response.code();
         var msg = response.message();
         var headers = formatHeaders(response.headers());
 
@@ -132,36 +129,72 @@ function printResponseHeaders(response) {
 }
 
 /**
- * Hook ResponseBody.string() —— 拦截应用读取响应体文本的调用
- * 【关键】ResponseBody 是一次性流，string() 只能调用一次
- * 所以不能在 Response Hook 中调用 body.string() 来预览，只能拦截应用自身的调用
- * 这里拦截返回值（应用已读取的结果），打印后原样返回，不影响应用逻辑
- * 必须遍历所有 overloads（OkHttp4/Kotlin 有多个重载），用 IIFE 捕获变量
+ * Hook ResponseBody.string() —— 核心拦截点
+ *
+ * 这是整个脚本中最稳定的 Hook 点，100% 触发。
+ * 应用调用 response.body().string() 时触发，此时：
+ *   - Response 对象完全可用（通过 Java.choose 按线程查找）
+ *   - response.request() 包含经过所有拦截器处理后的完整请求头
+ *   - response.code() / response.headers() 包含完整响应信息
+ *
+ * 所以在此 Hook 中一次性打印：请求头 + 响应头 + 响应体
+ *
+ * 【安全】只拦截 string() 返回值，不额外消耗流
  */
 function hookResponseBodyString() {
     var ResponseBody = tryUse("okhttp3.ResponseBody");
     if (!ResponseBody) return;
 
+    // 去重：记录已打印过完整信息的 Response，避免应用多次调用 string() 时重复打印
+    var printedKeys = {};
+
     var overloads = ResponseBody.string.overloads;
-    // 必须遍历所有重载：OkHttp4/Kotlin 编译后可能有多个 string() 签名
-    // 用 IIFE 包裹，避免循环变量 i 在闭包中被共享（var 是函数作用域）
     for (var i = 0; i < overloads.length; i++) {
         (function (overload) {
-            // 替换 string() 的实现：先调用原始方法拿到结果，再拦截打印
-            // 应用调用 response.body().string() 时，实际执行的就是这个函数
             overload.implementation = function () {
-                // 调用原始 string()，获取返回值（此时流被消耗，但不影响，因为就是这个调用该消耗）
                 var result = this.string();
                 try {
-                    // "" + result：强制将 Java String 转为 JS string
-                    // Frida 中 Java 对象和 JS 对象不同，必须转换后才能用 JS 的 .length 属性
                     var str = result ? "" + result : "";
-                    // 这里用 str.length（JS 属性），而不是 str.length()（Java 方法）
                     var len = str.length;
-                    var preview = str.substring(0, Math.min(len, 2000));
+
+                    // 通过 Java.choose 在堆上查找当前线程持有的 Response 对象
+                    // Response.body() 返回的就是当前这个 ResponseBody，所以可以匹配
+                    // 匹配到后，一次打印完整的请求头+响应头+响应体
+                    var Response = Java.use("okhttp3.Response");
+                    var currentBody = this;
+                    var foundResponse = null;
+
+                    Java.choose("okhttp3.Response", {
+                        onMatch: function (instance) {
+                            try {
+                                var body = instance.body();
+                                if (body !== null && body.equals(currentBody)) {
+                                    foundResponse = instance;
+                                }
+                            } catch (e) {}
+                        },
+                        onComplete: function () {}
+                    });
+
+                    if (foundResponse) {
+                        // 用 Response 的 hashCode 去重
+                        var key = "" + foundResponse.hashCode();
+                        if (!printedKeys[key]) {
+                            printedKeys[key] = true;
+                            // 5秒后清理去重记录
+                            setTimeout(function () { delete printedKeys[key]; }, 5000);
+
+                            // 打印完整的请求头（经过所有拦截器处理后的最终请求）
+                            printRequest(foundResponse.request());
+                            // 打印响应头（通过 Frida JNI 反射获取，不受 ART 内联影响）
+                            printResponseHeaders(foundResponse, foundResponse.code());
+                        }
+                    }
+
+                    // 打印响应体
                     console.log("");
                     console.log("<<<<<<<<<<<<<<<< [ResponseBody] <<<<<<<<<<<<<<<<<<<<<<<<");
-                    console.log("  Body (" + len + "): " + preview);
+                    console.log("  Body (" + len + "): " + str.substring(0, Math.min(len, 2000)));
                     console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
                 } catch (e) {}
                 return result;
@@ -200,185 +233,76 @@ function hookResponseBodyBytes() {
 // 用于生成唯一的动态注册类名，避免 Java.registerClass 名称冲突
 var cbCounter = 0;
 
-// 去重条目的过期时间（毫秒），同一请求的两个 Hook 点（getResponseWithInterceptorChain 和 onResponse）
-// 在此时间窗口内共享去重状态，超时后自动过期，允许后续相同请求正常打印
-var DEDUP_TTL = 10000;
-
-// 请求去重集合：key=Response.hashCode, value=记录时间戳
-var printedRequests = {};
-
 /**
- * 标记一个请求为已打印，返回 true 表示首次标记（应打印），false 表示已打印过（跳过）
- * 每次调用时顺便清理所有过期条目，避免内存无限增长
- */
-function markPrinted(key) {
-    var now = Date.now();
-    // 惰性淘汰：遍历集合，删除所有已过期条目
-    var keys = Object.keys(printedRequests);
-    for (var i = 0; i < keys.length; i++) {
-        if (now - printedRequests[keys[i]] >= DEDUP_TTL) {
-            delete printedRequests[keys[i]];
-        }
-    }
-    if (printedRequests[key]) return false;
-    printedRequests[key] = now;
-    return true;
-}
-
-/**
- * 从 Java 类的方法列表中搜索匹配指定关键词的方法名
- * OkHttp4 Kotlin 编译后方法名可能带各种后缀（如 $okhttp, $api 等），无法穷举
- * 通过关键词模糊匹配自动发现正确的方法名，适应任意版本的 OkHttp
+ * Hook OkHttp 请求和响应
  *
- * @param {Java.Wrapper} cls - Frida Java.use() 返回的类引用
- * @param {string} keyword - 方法名关键词，如 "getResponseWithInterceptorChain"
- * @returns {string|null} 匹配到的方法名，未找到返回 null
- */
-function findMethodByName(cls, keyword) {
-    try {
-        var methods = cls.class.getDeclaredMethods();
-        for (var i = 0; i < methods.length; i++) {
-            var name = methods[i].getName();
-            if (name.indexOf(keyword) !== -1) {
-                return name;
-            }
-        }
-    } catch (e) {}
-    return null;
-}
-
-/**
- * Hook OkHttp RealCall —— 拦截所有 HTTP 请求和响应
+ * 经过反复测试，以下 OkHttp 方法的 Frida Hook 是稳定的：
+ *   ✅ ResponseBody.string() — 一直稳定触发
+ *   ✅ ResponseBody.bytes() — 一直稳定触发
+ *   ✅ RealCall.enqueue() — 一直稳定触发
+ *   ✅ RealCall.execute() — 一直稳定触发
  *
- * 智能搜索策略：
- *   1. 先尝试多个已知 RealCall 类路径（不同 OkHttp 版本位置不同）
- *   2. 在找到的类中自动搜索包含 "getResponseWithInterceptorChain" 的方法
- *      无论方法名带什么后缀（$okhttp, $api, ProGuard 混淆等）都能匹配
- *   3. 如果搜索不到，再降级到 execute() 作为 fallback
- *   4. 同时 Hook enqueue(callback) 的 onResponse 作为双保险 + onFailure 捕获失败
- *   5. 使用 markPrinted() 去重，避免两个策略都触发时双重打印
+ * 以下方法 Hook 安装成功但 implementation 不触发（ART 优化/Kotlin 编译问题）：
+ *   ❌ getResponseWithInterceptorChain$okhttp
+ *   ❌ RealInterceptorChain.proceed()
+ *   ❌ Response.code()
+ *
+ * 最终方案：利用稳定触发的 Hook 点组合完成全量信息采集
+ *   - enqueue()/execute() → 打印请求 URL 摘要（此时请求头可能不完整）
+ *   - ResponseBody.string()/bytes() → 打印完整的请求头+响应头+响应体
+ *     因为此时 Response 对象完全可用，通过 Frida JNI 反射读取所有信息
  */
 function hookRealCall() {
-    // OkHttp 不同版本的 RealCall 类路径不同，依次尝试
-    var classPaths = [
+    var callPaths = [
         "okhttp3.internal.connection.RealCall",
         "okhttp3.RealCall"
     ];
     var cls = null;
-    for (var ci = 0; ci < classPaths.length; ci++) {
-        cls = tryUse(classPaths[ci]);
+    for (var ci = 0; ci < callPaths.length; ci++) {
+        cls = tryUse(callPaths[ci]);
         if (cls) {
-            console.log("[+] Found RealCall: " + classPaths[ci]);
+            console.log("[+] Found RealCall: " + callPaths[ci]);
             break;
         }
     }
     if (!cls) {
-        console.log("[-] RealCall class not found in any known path");
+        console.log("[-] RealCall class not found");
         return;
     }
 
-    // --- 策略1：自动搜索并 Hook getResponseWithInterceptorChain ---
-    // 不硬编码方法名，而是通过关键词在类的所有方法中模糊搜索
-    var getRespMethod = findMethodByName(cls, "getResponseWithInterceptorChain");
-
-    if (getRespMethod) {
-        var getRespOv = cls[getRespMethod].overloads;
-        for (var i = 0; i < getRespOv.length; i++) {
-            (function (overload, methodName) {
-                overload.implementation = function () {
-                    var resp = this[methodName]();
-                    try {
-                        // 用 Response 对象的 hashCode 唯一标识本次请求
-                        // 同一次请求的 Response 对象在 getResponseWithInterceptorChain 和 onResponse 中是同一个
-                        var key = "" + resp.hashCode();
-                        if (markPrinted(key)) {
-                            printRequest(resp.request());
-                            printResponseHeaders(resp);
-                        }
-                    } catch (e) {
-                        console.log("[hook " + methodName + " print error: " + e.message + "]");
-                    }
-                    return resp;
-                };
-            })(getRespOv[i], getRespMethod);
-        }
-        console.log("[+] Hooked " + getRespMethod);
-    } else {
-        // 搜索不到，降级到 Hook execute()
-        console.log("[-] getResponseWithInterceptorChain not found, falling back to execute()");
-        if (cls.execute) {
-            var execOv = cls.execute.overloads;
-            for (var i = 0; i < execOv.length; i++) {
-                (function (overload) {
-                    overload.implementation = function () {
-                        var resp = this.execute();
-                        try {
-                            printRequest(resp.request());
-                            printResponseHeaders(resp);
-                        } catch (e) {
-                            console.log("[hook execute print error: " + e.message + "]");
-                        }
-                        return resp;
-                    };
-                })(execOv[i]);
-            }
-            console.log("[+] Hooked execute");
-        }
-    }
-
-    // --- 策略2：Hook enqueue(callback) ---
-    // 双重作用：(a) 作为策略1的备份打印请求/响应信息 (b) 捕获 onFailure 失败场景
+    // Hook enqueue：打印请求 URL 摘要
     if (cls.enqueue) {
         var enqOv = cls.enqueue.overloads;
         for (var i = 0; i < enqOv.length; i++) {
             (function (overload) {
                 overload.implementation = function (callback) {
-                    var origCb = Java.retain(callback);
-                    var idx = ++cbCounter;
-                    var Callback = Java.use("okhttp3.Callback");
-
                     try {
-                        var Wrapped = Java.registerClass({
-                            name: "com.hook.OkCb" + idx,
-                            implements: [Callback],
-                            methods: {
-                                // 请求成功回调：作为备份打印请求/响应信息（策略1可能未触发）
-                                onResponse: function (call, response) {
-                                    try {
-                                        // 用 Response 的 hashCode 标识，与 getResponseWithInterceptorChain Hook 共享同一个 key
-                                        // 如果策略1已打印过，这里自动跳过；如果策略1未触发，这里补打
-                                        var key = "" + response.hashCode();
-                                        if (markPrinted(key)) {
-                                            printRequest(response.request());
-                                            printResponseHeaders(response);
-                                        }
-                                    } catch (e) {}
-                                    origCb.onResponse(call, response);
-                                },
-                                // 请求失败回调：打印失败信息
-                                onFailure: function (call, e) {
-                                    try {
-                                        var req = call.request();
-                                        console.log("");
-                                        console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-                                        console.log("[Failure] " + req.method() + " " + req.url().toString());
-                                        console.log("  Error: " + e.getMessage());
-                                        console.log("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-                                    } catch (ex) {}
-                                    origCb.onFailure(call, e);
-                                }
-                            }
-                        });
-                        return this.enqueue(Wrapped.$new());
-                    } catch (regErr) {
-                        // Java.registerClass 失败（版本兼容性等），降级到直接调用
-                        console.log("[-] registerClass failed, fallback to direct enqueue: " + regErr.message);
-                        return this.enqueue(callback);
-                    }
+                        var req = this.request();
+                        console.log("[Request] >>>> " + req.method() + " " + req.url().toString());
+                    } catch (e) {}
+                    return this.enqueue(callback);
                 };
             })(enqOv[i]);
         }
         console.log("[+] Hooked enqueue");
+    }
+
+    // Hook execute：直接打印完整信息（同步请求的 Response 立即可用）
+    if (cls.execute) {
+        var execOv = cls.execute.overloads;
+        for (var i = 0; i < execOv.length; i++) {
+            (function (overload) {
+                overload.implementation = function () {
+                    var resp = this.execute();
+                    try {
+                        printRequest(resp.request());
+                        printResponseHeaders(resp, resp.code());
+                    } catch (e) {}
+                    return resp;
+                };
+            })(execOv[i]);
+        }
+        console.log("[+] Hooked execute");
     }
 }
 

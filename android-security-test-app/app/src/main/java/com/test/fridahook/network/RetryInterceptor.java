@@ -34,6 +34,11 @@ public class RetryInterceptor implements Interceptor {
                 exception = e;
                 Log.w(TAG, "Retry " + (retryCount + 1) + "/" + maxRetry + ": " + e.getMessage());
             }
+
+            if (response != null) {
+                response.close();
+                response = null;
+            }
             retryCount++;
         }
 

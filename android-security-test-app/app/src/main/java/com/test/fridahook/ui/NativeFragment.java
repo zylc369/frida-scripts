@@ -99,8 +99,8 @@ public class NativeFragment extends Fragment {
     }
 
     private void addLog(String message, int type) {
-        logItems.add(new LogAdapter.LogItem(message, type));
-        logAdapter.notifyItemInserted(logItems.size() - 1);
-        rvLogs.smoothScrollToPosition(logItems.size() - 1);
+        logItems.add(0, new LogAdapter.LogItem(message, type));
+        logAdapter.notifyItemInserted(0);
+        rvLogs.scrollToPosition(0);
     }
 }
