@@ -312,10 +312,10 @@ function extractRequestInfo(request) {
         ("0" + d.getMinutes()).slice(-2) + ":" +
         ("0" + d.getSeconds()).slice(-2) + "." +
         ("00" + d.getMilliseconds()).slice(-3);
-    return { url: url, method: method, headers: headers, body: "" + bodyStr, extractedAt: ts };
+    return { url: url, method: method, headers: headers, body: bodyStr, extractedAt: ts };
 }
 
-function printExtractedRequest(info) {
+function printRequestInfo(info) {
     tsLog(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
     tsLog("[Request] " + info.method + " " + info.url + "  (captured at " + info.extractedAt + ")");
     tsLog("--------------------------------------------------------");
@@ -353,10 +353,14 @@ function hookInterceptorChain() {
 
                 var info = extractRequestInfo(request);
                 var headerCount = Object.keys(info.headers).length;
-                if (headerCount > lastChainHeaderCount[tid]) {
+                var shouldPrint = headerCount > lastChainHeaderCount[tid];
+                if (shouldPrint) {
                     lastChainRequest[tid] = info;
                     lastChainHeaderCount[tid] = headerCount;
-                    printExtractedRequest(info);
+                }
+
+                if (shouldPrint) {
+                    try { printRequestInfo(info); } catch (e) {}
                 }
 
                 var resp = this.proceed(request);
